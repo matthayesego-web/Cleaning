@@ -10,9 +10,10 @@ import kotlinx.coroutines.flow.asStateFlow
 class InMemoryTaskRepository : TaskRepository {
     private val mutableTasks = MutableStateFlow(
         listOf(
-            CleaningTask("welcome-1", "Empty dishwasher", assignee = Assignee.JESSIE),
-            CleaningTask("welcome-2", "Sweep living room", assignee = Assignee.EITHER),
-            CleaningTask("welcome-3", "Clean bathroom", assignee = Assignee.MATT, priority = Priority.URGENT)
+            CleaningTask("welcome-1", "Empty dishwasher", room = "Kitchen", dueLabel = "Before dinner", assignee = Assignee.JESSIE),
+            CleaningTask("welcome-2", "Sweep living room", room = "Living room", assignee = Assignee.EITHER),
+            CleaningTask("welcome-3", "Clean bathroom", room = "Bathroom", dueLabel = "Tonight", assignee = Assignee.MATT, priority = Priority.URGENT),
+            CleaningTask("welcome-4", "Wipe kitchen counters", room = "Kitchen", assignee = Assignee.MATT, completed = true, completedBy = Assignee.MATT)
         )
     )
     override val tasks: StateFlow<List<CleaningTask>> = mutableTasks.asStateFlow()

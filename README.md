@@ -6,6 +6,7 @@ A private two-person Android cleaning app for Matt and Jessie. The project is be
 
 - Native Android app written in Kotlin and Jetpack Compose
 - Friendly Today screen with Matt/Jessie/Either assignments
+- Premium warm visual system, progress hero, filters, polished task cards, and branded launcher icon
 - Normal, Important, and Urgent priorities
 - Quick task creation and undoable completion
 - Repository abstraction ready for the Firestore implementation

@@ -10,6 +10,8 @@ data class CleaningTask(
     val id: String,
     val title: String,
     val notes: String = "",
+    val room: String = "Around the house",
+    val dueLabel: String = "Today",
     val assignee: Assignee = Assignee.EITHER,
     val priority: Priority = Priority.NORMAL,
     val completed: Boolean = false,

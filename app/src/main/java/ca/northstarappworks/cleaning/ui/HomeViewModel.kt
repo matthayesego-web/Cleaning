@@ -15,13 +15,14 @@ class HomeViewModel(
 ) : ViewModel() {
     val tasks: StateFlow<List<CleaningTask>> = repository.tasks
 
-    fun addTask(title: String, assignee: Assignee, priority: Priority) {
+    fun addTask(title: String, room: String, assignee: Assignee, priority: Priority) {
         val cleanTitle = title.trim()
         if (cleanTitle.isEmpty()) return
         repository.add(
             CleaningTask(
                 id = UUID.randomUUID().toString(),
                 title = cleanTitle,
+                room = room,
                 assignee = assignee,
                 priority = priority
             )
