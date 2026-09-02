@@ -1,0 +1,19 @@
+package ca.northstarappworks.cleaning.model
+
+import java.time.Instant
+
+enum class Assignee(val label: String) { MATT("Matt"), JESSIE("Jessie"), EITHER("Either") }
+
+enum class Priority(val label: String) { NORMAL("Normal"), IMPORTANT("Important"), URGENT("Urgent") }
+
+data class CleaningTask(
+    val id: String,
+    val title: String,
+    val notes: String = "",
+    val assignee: Assignee = Assignee.EITHER,
+    val priority: Priority = Priority.NORMAL,
+    val completed: Boolean = false,
+    val completedBy: Assignee? = null,
+    val completedAt: Instant? = null,
+    val createdAt: Instant = Instant.now()
+)
