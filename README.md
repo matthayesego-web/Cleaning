@@ -2,7 +2,7 @@
 
 A private two-person Android cleaning app for Matt and Jessie. The goal is intentionally small: see what needs doing, assign it, check it off, keep a friendly scoreboard, and keep both phones in sync.
 
-## Current development milestone
+## Current development milestone — 0.2.0
 
 - Native Android app written in Kotlin and Jetpack Compose
 - Premium room-organized Today screen with Matt / Jessie / Either assignments
