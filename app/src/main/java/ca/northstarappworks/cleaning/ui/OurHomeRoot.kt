@@ -64,6 +64,23 @@ fun OurHomeRoot(homeViewModel: HomeViewModel = viewModel()) {
 
     Box(Modifier.fillMaxSize()) {
         OurHomeApp(homeViewModel = homeViewModel)
+
+        if (
+            !pairingVisible &&
+            syncState.status != HouseholdSyncStatus.PAIRED &&
+            syncState.status != HouseholdSyncStatus.CONNECTING
+        ) {
+            Button(
+                onClick = { pairingVisible = true },
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = 48.dp),
+                shape = RoundedCornerShape(18.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Forest)
+            ) {
+                Icon(Icons.Default.Sync, null)
+                Spacer(Modifier.width(8.dp))
+                Text("Connect phones", fontWeight = FontWeight.Bold)
+            }
+        }
     }
 
     if (pairingVisible) {
