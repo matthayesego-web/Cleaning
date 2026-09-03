@@ -1,5 +1,16 @@
 # Our Home changelog
 
+## 0.3.1 — premium polish & gentle carry-over
+- Refined the full visual system with deeper forest tones, softer premium surfaces, sharper typography, hairline borders and more intentional elevation.
+- Reworked Today, Week, Activity and Household screens for a cleaner, more polished hierarchy.
+- Added room-specific visual accents and icons while preserving room-grouped task organization.
+- Added a richer Today progress card and more polished task, history and navigation treatments.
+- Added gentle task carry-over: unfinished work from an earlier scheduled date can surface on Today with a clear “Carried over” treatment instead of silently disappearing.
+- Weekly planning still preserves the original schedule so Today can be actionable without rewriting the weekly plan.
+- Past unfinished tasks are visually identified in the Week view as carried/missed work.
+- Household now surfaces connection status and the pairing code more cleanly.
+- Documented the future family-account architecture: adult accounts can manage the full household; child accounts will see only directly assigned tasks, can complete them, will not receive household notifications, and can still send completion activity to adult devices.
+
 ## 0.3.0 — calm daily planning
 - Today now shows only tasks scheduled for the current day instead of carrying every overdue item forward.
 - Added an automatic midnight date rollover so the Today screen refreshes itself for the new day.
