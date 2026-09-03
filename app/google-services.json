@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "576180506741",
+    "project_id": "our-home-89f81",
+    "storage_bucket": "our-home-89f81.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:576180506741:android:9238dd79c9c6383b99a83c",
+        "android_client_info": {
+          "package_name": "ca.northstarappworks.cleaning"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC7HcVQez8Y1GahyGkHVp_JG_BdsxL6xsI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:576180506741:android:87ca67076a38d69b99a83c",
+        "android_client_info": {
+          "package_name": "can.northstarappworks.cleaning"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC7HcVQez8Y1GahyGkHVp_JG_BdsxL6xsI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
