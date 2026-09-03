@@ -58,4 +58,12 @@ class InMemoryTaskRepository : TaskRepository {
     override fun removeCompletion(recordId: String) {
         mutableCompletions.value = mutableCompletions.value.filterNot { it.id == recordId }
     }
+
+    override fun replaceTasks(tasks: List<CleaningTask>) {
+        mutableTasks.value = tasks
+    }
+
+    override fun replaceCompletions(records: List<CompletionRecord>) {
+        mutableCompletions.value = records
+    }
 }
