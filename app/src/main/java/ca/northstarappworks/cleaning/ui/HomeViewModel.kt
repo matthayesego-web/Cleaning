@@ -16,6 +16,7 @@ import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.flow.StateFlow
 import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneId
 import java.util.UUID
 
 class HomeViewModel(application: Application) : AndroidViewModel(application) {
@@ -32,7 +33,6 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     val hadHouseholdAtLaunch: Boolean = householdPreferences.householdId.value != null
 
     fun createHousehold() = syncManager.createHousehold()
-
     fun joinHousehold(code: String) = syncManager.joinHousehold(code)
 
     fun addTask(
@@ -41,6 +41,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         assignee: Assignee,
         priority: Priority,
         recurrence: Recurrence,
+        intervalDays: Int,
         dueDate: LocalDate = LocalDate.now()
     ) {
         val cleanTitle = title.trim()
@@ -53,6 +54,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             assignee = assignee,
             priority = priority,
             recurrence = recurrence,
+            intervalDays = intervalDays.coerceIn(2, 365),
             nextDueDate = dueDate
         )
         repository.add(task)
@@ -66,6 +68,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         assignee: Assignee,
         priority: Priority,
         recurrence: Recurrence,
+        intervalDays: Int,
         dueDate: LocalDate
     ) {
         val cleanTitle = title.trim()
@@ -77,6 +80,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             assignee = assignee,
             priority = priority,
             recurrence = recurrence,
+            intervalDays = intervalDays.coerceIn(2, 365),
             nextDueDate = dueDate
         )
         repository.update(updated)
@@ -85,13 +89,9 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteTask(task: CleaningTask) {
         repository.delete(task.id)
-
         val householdId = householdPreferences.householdId.value ?: return
-        firestore.collection("households")
-            .document(householdId)
-            .collection("tasks")
-            .document(task.id)
-            .delete()
+        firestore.collection("households").document(householdId)
+            .collection("tasks").document(task.id).delete()
     }
 
     fun setCurrentUser(assignee: Assignee) {
@@ -100,11 +100,30 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setCompleted(task: CleaningTask, completed: Boolean) {
-        if (completed) {
-            completeTask(task)
-        } else {
-            reopenTask(task)
-        }
+        if (completed) completeTask(task) else reopenTask(task)
+    }
+
+    fun undoCompletion(record: CompletionRecord) {
+        val latestForTask = repository.completions.value
+            .filter { it.taskId == record.taskId }
+            .maxByOrNull { it.completedAt }
+            ?: return
+        if (latestForTask.id != record.id) return
+
+        val task = repository.tasks.value.firstOrNull { it.id == record.taskId } ?: return
+        repository.removeCompletion(record.id)
+        syncManager.deleteCompletion(record.id)
+
+        val restoredDueDate = record.scheduledDueDate
+            ?: record.completedAt.atZone(ZoneId.systemDefault()).toLocalDate()
+        val reopened = task.copy(
+            completed = false,
+            completedBy = null,
+            completedAt = null,
+            nextDueDate = restoredDueDate
+        )
+        repository.update(reopened)
+        syncManager.publishTask(reopened)
     }
 
     private fun completeTask(task: CleaningTask) {
@@ -116,6 +135,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             taskTitle = task.title,
             room = task.room,
             completedBy = completedBy,
+            scheduledDueDate = task.nextDueDate,
             completedAt = completedAt
         )
 
@@ -123,17 +143,13 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         syncManager.publishCompletion(record)
 
         val updatedTask = if (task.recurrence == Recurrence.ONE_OFF) {
-            task.copy(
-                completed = true,
-                completedBy = completedBy,
-                completedAt = completedAt
-            )
+            task.copy(completed = true, completedBy = completedBy, completedAt = completedAt)
         } else {
             task.copy(
                 completed = false,
                 completedBy = null,
                 completedAt = null,
-                nextDueDate = nextOccurrence(task.nextDueDate, task.recurrence)
+                nextDueDate = nextOccurrence(task)
             )
         }
 
@@ -145,37 +161,23 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         repository.completions.value
             .filter { it.taskId == task.id }
             .maxByOrNull { it.completedAt }
-            ?.let { completion ->
-                repository.removeCompletion(completion.id)
-                syncManager.deleteCompletion(completion.id)
-            }
-
-        val reopened = task.copy(
-            completed = false,
-            completedBy = null,
-            completedAt = null
-        )
-        repository.update(reopened)
-        syncManager.publishTask(reopened)
+            ?.let(::undoCompletion)
     }
 
-    private fun nextOccurrence(currentDueDate: LocalDate, recurrence: Recurrence): LocalDate {
+    private fun nextOccurrence(task: CleaningTask): LocalDate {
         val today = LocalDate.now()
-        var next = when (recurrence) {
-            Recurrence.ONE_OFF -> currentDueDate
-            Recurrence.DAILY -> currentDueDate.plusDays(1)
-            Recurrence.WEEKLY -> currentDueDate.plusWeeks(1)
-            Recurrence.MONTHLY -> currentDueDate.plusMonths(1)
-        }
-
-        while (!next.isAfter(today) && recurrence != Recurrence.ONE_OFF) {
-            next = when (recurrence) {
-                Recurrence.ONE_OFF -> next
-                Recurrence.DAILY -> next.plusDays(1)
-                Recurrence.WEEKLY -> next.plusWeeks(1)
-                Recurrence.MONTHLY -> next.plusMonths(1)
-            }
+        var next = advance(task.nextDueDate, task.recurrence, task.intervalDays)
+        while (!next.isAfter(today) && task.recurrence != Recurrence.ONE_OFF) {
+            next = advance(next, task.recurrence, task.intervalDays)
         }
         return next
+    }
+
+    private fun advance(date: LocalDate, recurrence: Recurrence, intervalDays: Int): LocalDate = when (recurrence) {
+        Recurrence.ONE_OFF -> date
+        Recurrence.DAILY -> date.plusDays(1)
+        Recurrence.CUSTOM_DAYS -> date.plusDays(intervalDays.coerceIn(2, 365).toLong())
+        Recurrence.WEEKLY -> date.plusWeeks(1)
+        Recurrence.MONTHLY -> date.plusMonths(1)
     }
 }

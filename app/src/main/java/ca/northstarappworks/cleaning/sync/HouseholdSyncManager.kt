@@ -27,12 +27,7 @@ import java.time.LocalDate
 import java.util.Date
 import kotlin.random.Random
 
-enum class HouseholdSyncStatus {
-    NOT_PAIRED,
-    CONNECTING,
-    PAIRED,
-    ERROR
-}
+enum class HouseholdSyncStatus { NOT_PAIRED, CONNECTING, PAIRED, ERROR }
 
 data class HouseholdSyncUiState(
     val status: HouseholdSyncStatus,
@@ -40,16 +35,6 @@ data class HouseholdSyncUiState(
     val message: String? = null
 )
 
-/**
- * Keeps the two-phone household mirrored through Firestore while leaving the
- * local repository as the UI's source of truth. This means the app remains
- * usable offline and naturally catches up when connectivity returns.
- *
- * This implementation deliberately stays on Firebase's free tier. Firestore
- * listeners provide near-real-time completion boops while the app process is
- * alive, and a persisted completion checkpoint provides a catch-up boop the
- * next time the app reconnects after having been fully closed.
- */
 class HouseholdSyncManager(
     context: Context,
     private val repository: TaskRepository,
@@ -77,17 +62,11 @@ class HouseholdSyncManager(
     private var completionListenerPrimed = false
 
     init {
-        preferences.householdId.value?.let { householdId ->
-            withSignedInUser { startSync(householdId) }
-        }
+        preferences.householdId.value?.let { householdId -> withSignedInUser { startSync(householdId) } }
     }
 
     fun createHousehold() {
-        mutableUiState.value = HouseholdSyncUiState(
-            HouseholdSyncStatus.CONNECTING,
-            message = "Creating Our Home…"
-        )
-
+        mutableUiState.value = HouseholdSyncUiState(HouseholdSyncStatus.CONNECTING, message = "Creating Our Home…")
         withSignedInUser { user ->
             val code = generatePairingCode()
             val householdRef = firestore.collection(HOUSEHOLDS).document()
@@ -96,33 +75,25 @@ class HouseholdSyncManager(
             val role = preferences.currentUser.value
 
             val batch = firestore.batch()
-            batch.set(
-                householdRef,
-                mapOf(
-                    "pairingCode" to code,
-                    "memberUids" to listOf(user.uid),
-                    "createdAt" to FieldValue.serverTimestamp(),
-                    "updatedAt" to FieldValue.serverTimestamp()
-                )
-            )
-            batch.set(
-                inviteRef,
-                mapOf(
-                    "householdId" to householdRef.id,
-                    "ownerUid" to user.uid,
-                    "createdAt" to FieldValue.serverTimestamp()
-                )
-            )
+            batch.set(householdRef, mapOf(
+                "pairingCode" to code,
+                "memberUids" to listOf(user.uid),
+                "createdAt" to FieldValue.serverTimestamp(),
+                "updatedAt" to FieldValue.serverTimestamp()
+            ))
+            batch.set(inviteRef, mapOf(
+                "householdId" to householdRef.id,
+                "ownerUid" to user.uid,
+                "createdAt" to FieldValue.serverTimestamp()
+            ))
             batch.set(memberRef, memberMap(role), SetOptions.merge())
 
             batch.commit()
                 .addOnSuccessListener {
                     preferences.setHousehold(householdRef.id, code)
-                    uploadLocalSnapshot(householdRef) {
-                        startSync(householdRef.id)
-                    }
+                    uploadLocalSnapshot(householdRef) { startSync(householdRef.id) }
                 }
-                .addOnFailureListener { error -> fail(error, "Couldn't create the household") }
+                .addOnFailureListener { fail(it, "Couldn't create the household") }
         }
     }
 
@@ -162,24 +133,18 @@ class HouseholdSyncManager(
 
                     firestore.runTransaction { transaction ->
                         val household = transaction.get(householdRef)
-                        if (!household.exists()) {
-                            throw IllegalStateException("Household no longer exists")
-                        }
+                        if (!household.exists()) throw IllegalStateException("Household no longer exists")
 
                         val members = household.get("memberUids") as? List<*> ?: emptyList<Any>()
                         val existingUids = members.mapNotNull { it as? String }
                         if (user.uid !in existingUids && existingUids.size >= MAX_MEMBERS) {
                             throw IllegalStateException("This household already has two phones")
                         }
-
                         if (user.uid !in existingUids) {
-                            transaction.update(
-                                householdRef,
-                                mapOf(
-                                    "memberUids" to FieldValue.arrayUnion(user.uid),
-                                    "updatedAt" to FieldValue.serverTimestamp()
-                                )
-                            )
+                            transaction.update(householdRef, mapOf(
+                                "memberUids" to FieldValue.arrayUnion(user.uid),
+                                "updatedAt" to FieldValue.serverTimestamp()
+                            ))
                         }
                         transaction.set(memberRef, memberMap(role), SetOptions.merge())
                         null
@@ -188,47 +153,38 @@ class HouseholdSyncManager(
                         repository.replaceTasks(emptyList())
                         repository.replaceCompletions(emptyList())
                         startSync(householdId)
-                    }.addOnFailureListener { error -> fail(error, "Couldn't join the household") }
+                    }.addOnFailureListener { fail(it, "Couldn't join the household") }
                 }
-                .addOnFailureListener { error -> fail(error, "Couldn't look up that household") }
+                .addOnFailureListener { fail(it, "Couldn't look up that household") }
         }
     }
 
     fun publishTask(task: CleaningTask) {
         val householdId = preferences.householdId.value ?: return
-        firestore.collection(HOUSEHOLDS)
-            .document(householdId)
-            .collection(TASKS)
-            .document(task.id)
+        firestore.collection(HOUSEHOLDS).document(householdId)
+            .collection(TASKS).document(task.id)
             .set(task.toRemoteMap(), SetOptions.merge())
     }
 
     fun publishCompletion(record: CompletionRecord) {
         val householdId = preferences.householdId.value ?: return
-        firestore.collection(HOUSEHOLDS)
-            .document(householdId)
-            .collection(COMPLETIONS)
-            .document(record.id)
+        firestore.collection(HOUSEHOLDS).document(householdId)
+            .collection(COMPLETIONS).document(record.id)
             .set(record.toRemoteMap())
     }
 
     fun deleteCompletion(recordId: String) {
         val householdId = preferences.householdId.value ?: return
-        firestore.collection(HOUSEHOLDS)
-            .document(householdId)
-            .collection(COMPLETIONS)
-            .document(recordId)
-            .delete()
+        firestore.collection(HOUSEHOLDS).document(householdId)
+            .collection(COMPLETIONS).document(recordId).delete()
     }
 
     fun updateMemberIdentity(assignee: Assignee) {
         if (assignee == Assignee.EITHER) return
         val householdId = preferences.householdId.value ?: return
         val user = auth.currentUser ?: return
-        firestore.collection(HOUSEHOLDS)
-            .document(householdId)
-            .collection(MEMBERS)
-            .document(user.uid)
+        firestore.collection(HOUSEHOLDS).document(householdId)
+            .collection(MEMBERS).document(user.uid)
             .set(memberMap(assignee), SetOptions.merge())
     }
 
@@ -238,68 +194,59 @@ class HouseholdSyncManager(
                 result.user?.let(onReady)
                     ?: fail(IllegalStateException("Anonymous sign-in returned no user"), "Couldn't connect")
             }
-            .addOnFailureListener { error -> fail(error, "Couldn't sign in to household sync") }
+            .addOnFailureListener { fail(it, "Couldn't sign in to household sync") }
     }
 
     private fun startSync(householdId: String) {
         stopListeners()
         completionListenerPrimed = false
         seenCompletionIds.clear()
-
         val householdRef = firestore.collection(HOUSEHOLDS).document(householdId)
 
-        listenerRegistrations += householdRef.collection(TASKS)
-            .addSnapshotListener { snapshot, error ->
-                if (error != null) {
-                    fail(error, "Task sync paused")
-                    return@addSnapshotListener
-                }
-                val tasks = snapshot?.documents.orEmpty()
-                    .mapNotNull { it.toCleaningTaskOrNull() }
-                    .sortedWith(compareBy<CleaningTask> { it.nextDueDate }.thenBy { it.room }.thenBy { it.title })
-                repository.replaceTasks(tasks)
+        listenerRegistrations += householdRef.collection(TASKS).addSnapshotListener { snapshot, error ->
+            if (error != null) {
+                fail(error, "Task sync paused")
+                return@addSnapshotListener
             }
+            val tasks = snapshot?.documents.orEmpty()
+                .mapNotNull { it.toCleaningTaskOrNull() }
+                .sortedWith(compareBy<CleaningTask> { it.nextDueDate }.thenBy { it.room }.thenBy { it.title })
+            repository.replaceTasks(tasks)
+        }
 
-        listenerRegistrations += householdRef.collection(COMPLETIONS)
-            .addSnapshotListener { snapshot, error ->
-                if (error != null) {
-                    fail(error, "History sync paused")
-                    return@addSnapshotListener
-                }
-                snapshot ?: return@addSnapshotListener
+        listenerRegistrations += householdRef.collection(COMPLETIONS).addSnapshotListener { snapshot, error ->
+            if (error != null) {
+                fail(error, "History sync paused")
+                return@addSnapshotListener
+            }
+            snapshot ?: return@addSnapshotListener
+            val records = snapshot.documents
+                .mapNotNull { it.toCompletionRecordOrNull() }
+                .sortedByDescending { it.completedAt }
+            repository.replaceCompletions(records)
 
-                val records = snapshot.documents
-                    .mapNotNull { it.toCompletionRecordOrNull() }
-                    .sortedByDescending { it.completedAt }
-                repository.replaceCompletions(records)
-
-                if (!completionListenerPrimed) {
-                    val previousCheckpoint = preferences.lastSeenCompletionAt()
-                    seenCompletionIds += records.map { it.id }
-
-                    if (previousCheckpoint != null) {
-                        records
-                            .asSequence()
-                            .filter { it.completedAt.isAfter(previousCheckpoint) }
-                            .filter { it.completedBy != preferences.currentUser.value }
-                            .sortedBy { it.completedAt }
-                            .forEach(::showCompletionBoop)
-                    }
-
-                    completionListenerPrimed = true
-                    updateCompletionCheckpoint(records)
-                } else {
-                    snapshot.documentChanges
-                        .asSequence()
-                        .filter { it.type == DocumentChange.Type.ADDED }
-                        .mapNotNull { change -> change.document.toCompletionRecordOrNull() }
-                        .filter { record -> seenCompletionIds.add(record.id) }
-                        .filter { record -> record.completedBy != preferences.currentUser.value }
+            if (!completionListenerPrimed) {
+                val previousCheckpoint = preferences.lastSeenCompletionAt()
+                seenCompletionIds += records.map { it.id }
+                if (previousCheckpoint != null) {
+                    records.asSequence()
+                        .filter { it.completedAt.isAfter(previousCheckpoint) }
+                        .filter { it.completedBy != preferences.currentUser.value }
+                        .sortedBy { it.completedAt }
                         .forEach(::showCompletionBoop)
-
-                    updateCompletionCheckpoint(records)
                 }
+                completionListenerPrimed = true
+                updateCompletionCheckpoint(records)
+            } else {
+                snapshot.documentChanges.asSequence()
+                    .filter { it.type == DocumentChange.Type.ADDED }
+                    .mapNotNull { it.document.toCompletionRecordOrNull() }
+                    .filter { seenCompletionIds.add(it.id) }
+                    .filter { it.completedBy != preferences.currentUser.value }
+                    .forEach(::showCompletionBoop)
+                updateCompletionCheckpoint(records)
             }
+        }
 
         mutableUiState.value = HouseholdSyncUiState(
             status = HouseholdSyncStatus.PAIRED,
@@ -319,8 +266,7 @@ class HouseholdSyncManager(
     }
 
     private fun updateCompletionCheckpoint(records: List<CompletionRecord>) {
-        records.maxOfOrNull { it.completedAt }
-            ?.let(preferences::setLastSeenCompletionAt)
+        records.maxOfOrNull { it.completedAt }?.let(preferences::setLastSeenCompletionAt)
     }
 
     private fun stopListeners() {
@@ -339,18 +285,13 @@ class HouseholdSyncManager(
         }
 
         val batch = firestore.batch()
-        localTasks.forEach { task ->
-            batch.set(householdRef.collection(TASKS).document(task.id), task.toRemoteMap())
-        }
-        localCompletions.forEach { completion ->
-            batch.set(
-                householdRef.collection(COMPLETIONS).document(completion.id),
-                completion.toRemoteMap()
-            )
+        localTasks.forEach { batch.set(householdRef.collection(TASKS).document(it.id), it.toRemoteMap()) }
+        localCompletions.forEach {
+            batch.set(householdRef.collection(COMPLETIONS).document(it.id), it.toRemoteMap())
         }
         batch.commit()
             .addOnSuccessListener { onFinished() }
-            .addOnFailureListener { error -> fail(error, "Household created, but local tasks couldn't upload") }
+            .addOnFailureListener { fail(it, "Household created, but local tasks couldn't upload") }
     }
 
     private fun memberMap(role: Assignee): Map<String, Any> = mapOf(
@@ -376,6 +317,7 @@ class HouseholdSyncManager(
         "assignee" to assignee.name,
         "priority" to priority.name,
         "recurrence" to recurrence.name,
+        "intervalDays" to intervalDays,
         "nextDueDate" to nextDueDate.toString(),
         "completed" to completed,
         "completedBy" to completedBy?.name,
@@ -384,11 +326,12 @@ class HouseholdSyncManager(
         "updatedAt" to FieldValue.serverTimestamp()
     )
 
-    private fun CompletionRecord.toRemoteMap(): Map<String, Any> = mapOf(
+    private fun CompletionRecord.toRemoteMap(): Map<String, Any?> = mapOf(
         "taskId" to taskId,
         "taskTitle" to taskTitle,
         "room" to room,
         "completedBy" to completedBy.name,
+        "scheduledDueDate" to scheduledDueDate?.toString(),
         "completedAt" to Timestamp(Date.from(completedAt))
     )
 
@@ -402,9 +345,8 @@ class HouseholdSyncManager(
             assignee = enumOrDefault(getString("assignee"), Assignee.EITHER),
             priority = enumOrDefault(getString("priority"), Priority.NORMAL),
             recurrence = enumOrDefault(getString("recurrence"), Recurrence.ONE_OFF),
-            nextDueDate = getString("nextDueDate")
-                ?.let { LocalDate.parse(it) }
-                ?: LocalDate.now(),
+            intervalDays = (getLong("intervalDays")?.toInt() ?: 2).coerceIn(2, 365),
+            nextDueDate = getString("nextDueDate")?.let(LocalDate::parse) ?: LocalDate.now(),
             completed = getBoolean("completed") ?: false,
             completedBy = getString("completedBy")?.let { enumOrDefault(it, Assignee.EITHER) },
             completedAt = getTimestamp("completedAt")?.toDate()?.toInstant(),
@@ -419,6 +361,7 @@ class HouseholdSyncManager(
             taskTitle = getString("taskTitle") ?: "Task",
             room = getString("room") ?: "Around the house",
             completedBy = enumOrDefault(getString("completedBy"), Assignee.MATT),
+            scheduledDueDate = getString("scheduledDueDate")?.let { runCatching { LocalDate.parse(it) }.getOrNull() },
             completedAt = getTimestamp("completedAt")?.toDate()?.toInstant() ?: Instant.now()
         )
     }.getOrNull()
@@ -427,13 +370,10 @@ class HouseholdSyncManager(
         enumValues<T>().firstOrNull { it.name == value } ?: fallback
 
     private fun generatePairingCode(): String = buildString {
-        repeat(PAIRING_CODE_LENGTH) {
-            append(PAIRING_ALPHABET[Random.nextInt(PAIRING_ALPHABET.length)])
-        }
+        repeat(PAIRING_CODE_LENGTH) { append(PAIRING_ALPHABET[Random.nextInt(PAIRING_ALPHABET.length)]) }
     }
 
-    private fun String.normalizedPairingCode(): String =
-        uppercase().filter { it.isLetterOrDigit() }
+    private fun String.normalizedPairingCode(): String = uppercase().filter { it.isLetterOrDigit() }
 
     companion object {
         private const val HOUSEHOLDS = "households"

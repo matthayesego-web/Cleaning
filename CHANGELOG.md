@@ -1,5 +1,13 @@
 # Our Home changelog
 
+## 0.3.2 — flexible repeats & completion undo
+- Added custom day-based recurrence so a task can repeat every 2–365 days instead of only daily, weekly or monthly.
+- Custom repeat schedules stay anchored to the selected start day and advance to the next future occurrence after completion.
+- Added Undo beside tasks in Finished today so accidental completions can be reversed immediately.
+- Added Undo for completed tasks in the Week view.
+- Completion records now preserve the scheduled occurrence date so undoing a recurring task restores the correct occurrence instead of disturbing its future cadence.
+- Custom recurrence and undo metadata sync through Firestore and persist locally on both phones.
+
 ## 0.3.1 — premium polish & gentle carry-over
 - Refined the full visual system with deeper forest tones, softer premium surfaces, sharper typography, hairline borders and more intentional elevation.
 - Reworked Today, Week, Activity and Household screens for a cleaner, more polished hierarchy.
