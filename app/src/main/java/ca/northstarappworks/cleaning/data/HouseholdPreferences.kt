@@ -35,7 +35,9 @@ class HouseholdPreferences(context: Context) {
         preferences.edit()
             .putString(KEY_HOUSEHOLD_ID, householdId)
             .putString(KEY_PAIRING_CODE, pairingCode)
-            .remove(KEY_LAST_SEEN_COMPLETION_AT)
+            // Establish a baseline at pairing time so historical completions do
+            // not all boop, while anything completed afterwards can be caught up.
+            .putString(KEY_LAST_SEEN_COMPLETION_AT, Instant.now().toString())
             .apply()
     }
 
