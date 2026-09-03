@@ -18,6 +18,7 @@ enum class Priority(val label: String) {
 enum class Recurrence(val label: String) {
     ONE_OFF("One-off"),
     DAILY("Daily"),
+    CUSTOM_DAYS("Custom"),
     WEEKLY("Weekly"),
     MONTHLY("Monthly")
 }
@@ -31,6 +32,7 @@ data class CleaningTask(
     val assignee: Assignee = Assignee.EITHER,
     val priority: Priority = Priority.NORMAL,
     val recurrence: Recurrence = Recurrence.ONE_OFF,
+    val intervalDays: Int = 2,
     val nextDueDate: LocalDate = LocalDate.now(),
     val completed: Boolean = false,
     val completedBy: Assignee? = null,
