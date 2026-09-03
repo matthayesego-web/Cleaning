@@ -45,6 +45,11 @@ class PersistentTaskRepository(context: Context) : TaskRepository {
         persistTasks()
     }
 
+    override fun delete(taskId: String) {
+        mutableTasks.value = mutableTasks.value.filterNot { it.id == taskId }
+        persistTasks()
+    }
+
     override fun addCompletion(record: CompletionRecord) {
         mutableCompletions.value = listOf(record) + mutableCompletions.value
         persistCompletions()
