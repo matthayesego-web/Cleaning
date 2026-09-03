@@ -8,7 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import ca.northstarappworks.cleaning.ui.OurHomeApp
+import ca.northstarappworks.cleaning.ui.OurHomeRoot
 import ca.northstarappworks.cleaning.ui.OurHomeTheme
 
 class MainActivity : ComponentActivity() {
@@ -20,7 +20,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         requestNotificationPermissionIfNeeded()
         enableEdgeToEdge()
-        setContent { OurHomeTheme { OurHomeApp() } }
+        setContent { OurHomeTheme { OurHomeRoot() } }
     }
 
     private fun requestNotificationPermissionIfNeeded() {
