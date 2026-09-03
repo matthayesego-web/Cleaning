@@ -89,9 +89,11 @@ class PersistentTaskRepository(context: Context) : TaskRepository {
         completedBy = optNullableString("completedBy")?.let {
             enumValueOrDefault(it, Assignee.EITHER)
         },
-        completedAt = optNullableString("completedAt")?.let { runCatching(Instant::parse).getOrNull() },
+        completedAt = optNullableString("completedAt")?.let { value ->
+            runCatching { Instant.parse(value) }.getOrNull()
+        },
         createdAt = optNullableString("createdAt")
-            ?.let { runCatching(Instant::parse).getOrNull() }
+            ?.let { value -> runCatching { Instant.parse(value) }.getOrNull() }
             ?: Instant.now()
     )
 
