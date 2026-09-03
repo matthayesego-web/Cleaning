@@ -1,6 +1,7 @@
 package ca.northstarappworks.cleaning.ui
 
 import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -19,6 +20,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
@@ -30,6 +32,8 @@ import ca.northstarappworks.cleaning.model.CleaningTask
 import ca.northstarappworks.cleaning.model.CompletionRecord
 import ca.northstarappworks.cleaning.model.Priority
 import ca.northstarappworks.cleaning.model.Recurrence
+import ca.northstarappworks.cleaning.sync.HouseholdSyncStatus
+import ca.northstarappworks.cleaning.sync.HouseholdSyncUiState
 import kotlinx.coroutines.delay
 import java.time.Duration
 import java.time.LocalDate
@@ -73,6 +77,7 @@ fun OurHomeApp(homeViewModel: HomeViewModel = viewModel()) {
     val tasks by homeViewModel.tasks.collectAsState()
     val completions by homeViewModel.completions.collectAsState()
     val currentUser by homeViewModel.currentUser.collectAsState()
+    val syncState by homeViewModel.syncUiState.collectAsState()
     val today = rememberToday()
 
     var selectedTab by remember { mutableStateOf(HomeTab.TODAY) }
@@ -85,9 +90,10 @@ fun OurHomeApp(homeViewModel: HomeViewModel = viewModel()) {
             if (selectedTab == HomeTab.TODAY) {
                 ExtendedFloatingActionButton(
                     onClick = { editorRequest = EditorRequest(dueDate = today) },
-                    containerColor = Forest,
+                    containerColor = ForestDeep,
                     contentColor = Color.White,
-                    shape = RoundedCornerShape(18.dp),
+                    elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 8.dp),
+                    shape = RoundedCornerShape(19.dp),
                     icon = { Icon(Icons.Default.Add, null) },
                     text = { Text("New task", fontWeight = FontWeight.Bold) }
                 )
@@ -124,6 +130,7 @@ fun OurHomeApp(homeViewModel: HomeViewModel = viewModel()) {
 
             HomeTab.HOUSEHOLD -> HouseholdScreen(
                 currentUser = currentUser,
+                syncState = syncState,
                 onCurrentUserChanged = homeViewModel::setCurrentUser,
                 modifier = Modifier.padding(padding)
             )
@@ -138,24 +145,9 @@ fun OurHomeApp(homeViewModel: HomeViewModel = viewModel()) {
             onSave = { title, room, assignee, priority, recurrence, dueDate ->
                 val existing = request.task
                 if (existing == null) {
-                    homeViewModel.addTask(
-                        title = title,
-                        room = room,
-                        assignee = assignee,
-                        priority = priority,
-                        recurrence = recurrence,
-                        dueDate = dueDate
-                    )
+                    homeViewModel.addTask(title, room, assignee, priority, recurrence, dueDate)
                 } else {
-                    homeViewModel.updateTask(
-                        task = existing,
-                        title = title,
-                        room = room,
-                        assignee = assignee,
-                        priority = priority,
-                        recurrence = recurrence,
-                        dueDate = dueDate
-                    )
+                    homeViewModel.updateTask(existing, title, room, assignee, priority, recurrence, dueDate)
                 }
                 editorRequest = null
             }
@@ -178,12 +170,11 @@ private fun TodayScreen(
     var filter by remember { mutableStateOf(TaskFilter.ALL) }
     val partner = if (currentUser == Assignee.MATT) Assignee.JESSIE else Assignee.MATT
 
-    // Today is deliberately exact: overdue tasks do not snowball into a giant list.
-    // Recurring tasks calculate whether they belong on the new date automatically.
-    val todayTasks = tasks.filter { task ->
-        !task.completed && task.occursOn(today)
+    // Today remains calm: scheduled work plus only unfinished work that needs carrying forward.
+    val actionableTasks = tasks.filter { task ->
+        !task.completed && (task.occursOn(today) || task.isCarryoverFor(today))
     }
-    val visibleTasks = todayTasks.filter { task ->
+    val visibleTasks = actionableTasks.filter { task ->
         when (filter) {
             TaskFilter.ALL -> true
             TaskFilter.MINE -> task.assignee == currentUser
@@ -194,36 +185,48 @@ private fun TodayScreen(
     val completedToday = completions.filter { completion ->
         completion.completedAt.atZone(ZoneId.systemDefault()).toLocalDate() == today
     }
-
+    val carryoverCount = actionableTasks.count { it.isCarryoverFor(today) }
     val groupedTasks = visibleTasks.groupBy { it.room }
     val orderedRooms = orderedRooms(groupedTasks.keys)
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = 104.dp),
+        contentPadding = PaddingValues(bottom = 110.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item {
             WelcomeHeader(
                 currentUser = currentUser,
+                today = today,
                 hasActivity = completedToday.isNotEmpty(),
                 onBellClick = onBellClick
             )
         }
-        item { ProgressHero(done = completedToday.size, waiting = todayTasks.size) }
+        item {
+            ProgressHero(
+                done = completedToday.size,
+                waiting = actionableTasks.size,
+                carried = carryoverCount
+            )
+        }
         item { FilterRow(filter, currentUser) { filter = it } }
 
         if (visibleTasks.isEmpty()) {
             item { EmptyState() }
         } else {
             orderedRooms.forEach { room ->
-                val roomTasks = groupedTasks[room].orEmpty().sortedBy { it.title.lowercase() }
+                val roomTasks = groupedTasks[room].orEmpty().sortedWith(
+                    compareByDescending<CleaningTask> { it.isCarryoverFor(today) }
+                        .thenByDescending { it.priority.ordinal }
+                        .thenBy { it.title.lowercase() }
+                )
                 item(key = "today-header-$room") {
                     RoomHeader(room = room, count = roomTasks.size)
                 }
                 items(roomTasks, key = { it.id }) { task ->
                     TaskCard(
                         task = task,
+                        carriedOver = task.isCarryoverFor(today),
                         onChecked = { checked -> onChecked(task, checked) },
                         onEdit = { onEdit(task) },
                         onDelete = { onDelete(task) },
@@ -242,124 +245,183 @@ private fun TodayScreen(
 @Composable
 private fun WelcomeHeader(
     currentUser: Assignee,
+    today: LocalDate,
     hasActivity: Boolean,
     onBellClick: () -> Unit
 ) {
-    Row(
-        Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 22.dp, bottom = 4.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(
-                "Good ${dayPart()}, ${currentUser.label}",
-                fontSize = 28.sp,
-                lineHeight = 34.sp,
-                fontWeight = FontWeight.ExtraBold,
-                color = Ink
-            )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Home, null, tint = Forest, modifier = Modifier.size(14.dp))
-                Spacer(Modifier.width(5.dp))
-                Text("Our Home · Today", style = MaterialTheme.typography.bodyMedium, color = MutedInk)
-            }
-        }
-        IconButton(onClick = onBellClick) {
-            Box {
-                Icon(Icons.Default.NotificationsNone, "Recent activity", tint = Ink)
-                if (hasActivity) {
-                    Box(Modifier.align(Alignment.TopEnd).size(7.dp).background(Peach, CircleShape))
+    Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 16.dp, top = 22.dp, bottom = 2.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Good ${dayPart()}, ${currentUser.label}",
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = Ink
+                )
+                Spacer(Modifier.height(3.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Surface(shape = CircleShape, color = MintSoft, border = BorderStroke(1.dp, Hairline)) {
+                        Row(
+                            Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.CalendarToday, null, tint = Forest, modifier = Modifier.size(13.dp))
+                            Spacer(Modifier.width(5.dp))
+                            Text(
+                                today.format(DateTimeFormatter.ofPattern("EEEE, MMM d")),
+                                color = MutedInk,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
                 }
             }
+            Surface(
+                shape = CircleShape,
+                color = Paper,
+                border = BorderStroke(1.dp, Hairline),
+                shadowElevation = 2.dp
+            ) {
+                IconButton(onClick = onBellClick) {
+                    Box {
+                        Icon(Icons.Default.NotificationsNone, "Recent activity", tint = Ink)
+                        if (hasActivity) {
+                            Box(
+                                Modifier
+                                    .align(Alignment.TopEnd)
+                                    .size(8.dp)
+                                    .background(Peach, CircleShape)
+                            )
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.width(10.dp))
+            Avatar(
+                currentUser.label.take(1),
+                if (currentUser == Assignee.MATT) Forest else Color(0xFF80679A),
+                size = 44
+            )
         }
-        Avatar(
-            currentUser.label.take(1),
-            if (currentUser == Assignee.MATT) Forest else Color(0xFF8D6AAE)
-        )
     }
 }
 
 @Composable
-private fun ProgressHero(done: Int, waiting: Int) {
+private fun ProgressHero(done: Int, waiting: Int, carried: Int) {
     val total = done + waiting
     val progress = if (total == 0) 1f else done.toFloat() / total.toFloat()
+
     Card(
         Modifier
             .fillMaxWidth()
             .padding(horizontal = 20.dp)
-            .shadow(18.dp, RoundedCornerShape(28.dp), ambientColor = Forest.copy(alpha = .16f)),
-        shape = RoundedCornerShape(28.dp),
+            .shadow(
+                elevation = 22.dp,
+                shape = RoundedCornerShape(30.dp),
+                ambientColor = ForestDeep.copy(alpha = .17f),
+                spotColor = ForestDeep.copy(alpha = .10f)
+            ),
+        shape = RoundedCornerShape(30.dp),
         colors = CardDefaults.cardColors(containerColor = Color.Transparent)
     ) {
-        Column(
+        Box(
             Modifier
-                .background(Brush.linearGradient(listOf(ForestDeep, Forest)))
+                .background(
+                    Brush.linearGradient(
+                        listOf(ForestDeep, Forest, ForestSoft)
+                    )
+                )
                 .padding(22.dp)
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Surface(color = Color.White.copy(alpha = .14f), shape = RoundedCornerShape(12.dp)) {
-                    Icon(
-                        Icons.Default.AutoAwesome,
-                        null,
-                        tint = Peach,
-                        modifier = Modifier.padding(9.dp).size(20.dp)
-                    )
-                }
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "Today’s little wins",
-                        color = Color.White.copy(alpha = .72f),
-                        style = MaterialTheme.typography.labelLarge
-                    )
-                    Text(
-                        when {
-                            total == 0 -> "Nothing waiting today"
-                            waiting == 0 -> "Home goal complete!"
-                            else -> "You’re making great progress"
-                        },
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 18.sp
-                    )
-                }
-                Text("$done/$total", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 22.sp)
-            }
-            Spacer(Modifier.height(20.dp))
             Box(
                 Modifier
-                    .fillMaxWidth()
-                    .height(10.dp)
-                    .clip(CircleShape)
-                    .background(Color.White.copy(alpha = .16f))
-            ) {
+                    .offset(x = 230.dp, y = (-44).dp)
+                    .size(120.dp)
+                    .background(Color.White.copy(alpha = .05f), CircleShape)
+            )
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Surface(color = Color.White.copy(alpha = .12f), shape = RoundedCornerShape(14.dp)) {
+                        Icon(
+                            Icons.Default.AutoAwesome,
+                            null,
+                            tint = Champagne,
+                            modifier = Modifier.padding(10.dp).size(20.dp)
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "TODAY AT HOME",
+                            color = Color.White.copy(alpha = .65f),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.1.sp
+                        )
+                        Text(
+                            when {
+                                total == 0 -> "Everything is clear"
+                                waiting == 0 -> "Home goal complete"
+                                done == 0 -> "A fresh start"
+                                else -> "Beautiful progress"
+                            },
+                            color = Color.White,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 20.sp
+                        )
+                    }
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text("$done", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 29.sp)
+                        Text("of $total", color = Color.White.copy(alpha = .62f), fontSize = 12.sp)
+                    }
+                }
+                Spacer(Modifier.height(20.dp))
                 Box(
                     Modifier
-                        .fillMaxWidth(progress)
-                        .height(10.dp)
+                        .fillMaxWidth()
+                        .height(8.dp)
                         .clip(CircleShape)
-                        .background(Brush.horizontalGradient(listOf(Peach, Color(0xFFFFD0A6))))
-                )
+                        .background(Color.White.copy(alpha = .13f))
+                ) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth(progress)
+                            .height(8.dp)
+                            .clip(CircleShape)
+                            .background(Brush.horizontalGradient(listOf(Champagne, Peach)))
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (waiting == 0) "Nothing waiting" else "$waiting waiting",
+                        color = Color.White.copy(alpha = .78f),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    if (carried > 0) {
+                        Text("  •  ", color = Color.White.copy(alpha = .35f))
+                        Surface(color = Color.White.copy(alpha = .10f), shape = CircleShape) {
+                            Text(
+                                "$carried carried over",
+                                Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                                color = Champagne,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                }
             }
-            Spacer(Modifier.height(10.dp))
-            Text(
-                "$done completed today · $waiting still waiting",
-                color = Color.White.copy(alpha = .78f),
-                style = MaterialTheme.typography.bodySmall
-            )
         }
     }
 }
 
 @Composable
-private fun FilterRow(
-    selected: TaskFilter,
-    currentUser: Assignee,
-    onFilter: (TaskFilter) -> Unit
-) {
+private fun FilterRow(selected: TaskFilter, currentUser: Assignee, onFilter: (TaskFilter) -> Unit) {
     val partner = if (currentUser == Assignee.MATT) Assignee.JESSIE else Assignee.MATT
     LazyRow(
         contentPadding = PaddingValues(horizontal = 20.dp),
-        horizontalArrangement = Arrangement.spacedBy(9.dp)
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         items(TaskFilter.entries) { filter ->
             val active = selected == filter
@@ -372,14 +434,16 @@ private fun FilterRow(
             Surface(
                 Modifier.clip(CircleShape).clickable { onFilter(filter) },
                 shape = CircleShape,
-                color = if (active) Forest else Color.White,
-                shadowElevation = if (active) 0.dp else 2.dp
+                color = if (active) ForestDeep else Paper,
+                border = if (active) null else BorderStroke(1.dp, Hairline),
+                shadowElevation = if (active) 3.dp else 0.dp
             ) {
                 Text(
                     label,
-                    Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+                    Modifier.padding(horizontal = 17.dp, vertical = 9.dp),
                     color = if (active) Color.White else MutedInk,
-                    fontWeight = FontWeight.SemiBold
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 13.sp
                 )
             }
         }
@@ -392,48 +456,79 @@ private fun RoomHeader(room: String, count: Int) {
         Modifier.fillMaxWidth().padding(start = 22.dp, end = 22.dp, top = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Surface(shape = RoundedCornerShape(10.dp), color = Mint) {
+        Surface(
+            shape = RoundedCornerShape(11.dp),
+            color = roomTint(room),
+            border = BorderStroke(1.dp, roomAccent(room).copy(alpha = .10f))
+        ) {
             Icon(
-                Icons.Default.HomeWork,
+                roomIcon(room),
                 null,
-                tint = ForestDeep,
-                modifier = Modifier.padding(7.dp).size(17.dp)
+                tint = roomAccent(room),
+                modifier = Modifier.padding(8.dp).size(17.dp)
             )
         }
-        Spacer(Modifier.width(9.dp))
-        Text(room, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = Ink)
+        Spacer(Modifier.width(10.dp))
+        Text(room, style = MaterialTheme.typography.titleMedium, color = Ink)
         Spacer(Modifier.weight(1f))
-        Text("$count", color = MutedInk, fontWeight = FontWeight.SemiBold)
+        Surface(shape = CircleShape, color = MintSoft) {
+            Text(
+                count.toString(),
+                Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                color = MutedInk,
+                fontWeight = FontWeight.Bold,
+                fontSize = 11.sp
+            )
+        }
     }
 }
 
 @Composable
 private fun TaskCard(
     task: CleaningTask,
+    carriedOver: Boolean,
     onChecked: (Boolean) -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val accent = when (task.priority) {
-        Priority.URGENT -> Color(0xFFD35D56)
+    val priorityAccent = when (task.priority) {
+        Priority.URGENT -> Color(0xFFC85550)
         Priority.IMPORTANT -> Peach
-        Priority.NORMAL -> Mint
+        Priority.NORMAL -> ForestSoft
+    }
+    val avatarColour = when (task.assignee) {
+        Assignee.JESSIE -> Color(0xFF80679A)
+        Assignee.MATT -> Forest
+        Assignee.EITHER -> Color(0xFF73847E)
     }
 
     Card(
         modifier.fillMaxWidth().animateContentSize(),
-        shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        elevation = CardDefaults.cardElevation(3.dp)
+        shape = RoundedCornerShape(23.dp),
+        border = BorderStroke(1.dp, if (carriedOver) Champagne.copy(alpha = .8f) else Hairline),
+        colors = CardDefaults.cardColors(containerColor = Paper),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
-        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.padding(start = 4.dp, top = 13.dp, end = 8.dp, bottom = 13.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .width(4.dp)
+                    .height(48.dp)
+                    .clip(CircleShape)
+                    .background(priorityAccent.copy(alpha = if (task.priority == Priority.NORMAL) .18f else .85f))
+            )
+            Spacer(Modifier.width(5.dp))
             Checkbox(
                 checked = false,
                 onCheckedChange = onChecked,
-                colors = CheckboxDefaults.colors(checkedColor = Forest, uncheckedColor = Color(0xFFB6C0BC))
+                colors = CheckboxDefaults.colors(
+                    checkedColor = Forest,
+                    uncheckedColor = Color(0xFFAAB6B1),
+                    checkmarkColor = Color.White
+                )
             )
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(3.dp))
             Column(Modifier.weight(1f)) {
                 Text(
                     task.title,
@@ -443,67 +538,60 @@ private fun TaskCard(
                     fontSize = 16.sp,
                     color = Ink
                 )
-                Spacer(Modifier.height(5.dp))
+                Spacer(Modifier.height(6.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(task.room, style = MaterialTheme.typography.bodySmall, color = MutedInk)
-                    Text("  ·  ", color = Color(0xFFBCC4C1))
-                    if (task.recurrence == Recurrence.ONE_OFF) {
-                        Icon(Icons.Default.Schedule, null, tint = MutedInk, modifier = Modifier.size(13.dp))
-                        Spacer(Modifier.width(3.dp))
-                        Text(task.nextDueDate.format(DateTimeFormatter.ofPattern("EEE")), style = MaterialTheme.typography.bodySmall, color = MutedInk)
+                    if (carriedOver) {
+                        Surface(shape = CircleShape, color = Color(0xFFFFF1DE)) {
+                            Row(
+                                Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.Update, null, tint = Color(0xFF97612B), modifier = Modifier.size(12.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Carried over", color = Color(0xFF7E542B), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
                     } else {
-                        Icon(Icons.Default.Repeat, null, tint = Forest, modifier = Modifier.size(13.dp))
-                        Spacer(Modifier.width(3.dp))
-                        Text(task.recurrence.label, style = MaterialTheme.typography.bodySmall, color = ForestDeep)
+                        Icon(
+                            if (task.recurrence == Recurrence.ONE_OFF) Icons.Default.Schedule else Icons.Default.Repeat,
+                            null,
+                            tint = if (task.recurrence == Recurrence.ONE_OFF) MutedInk else Forest,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            if (task.recurrence == Recurrence.ONE_OFF) "Today" else task.recurrence.label,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (task.recurrence == Recurrence.ONE_OFF) MutedInk else ForestDeep
+                        )
                     }
                 }
             }
-            Column(horizontalAlignment = Alignment.End) {
-                val avatarColour = when (task.assignee) {
-                    Assignee.JESSIE -> Color(0xFF8D6AAE)
-                    Assignee.MATT -> Forest
-                    Assignee.EITHER -> Color(0xFF73847E)
-                }
-                Avatar(task.assignee.label.take(1), avatarColour)
-                if (task.priority != Priority.NORMAL) {
-                    Spacer(Modifier.height(7.dp))
-                    Box(Modifier.size(7.dp).background(accent, CircleShape))
-                }
-            }
+            Avatar(task.assignee.label.take(1), avatarColour, size = 36)
             TaskActionsButton(task.title, onEdit, onDelete)
         }
     }
 }
 
 @Composable
-private fun TaskActionsButton(
-    taskTitle: String,
-    onEdit: () -> Unit,
-    onDelete: () -> Unit
-) {
+private fun TaskActionsButton(taskTitle: String, onEdit: () -> Unit, onDelete: () -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
 
     Box {
         IconButton(onClick = { expanded = true }, modifier = Modifier.size(34.dp)) {
-            Icon(Icons.Default.MoreVert, "Task options", tint = Color(0xFF9AA5A1))
+            Icon(Icons.Default.MoreVert, "Task options", tint = Color(0xFF8F9B96))
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             DropdownMenuItem(
                 text = { Text("Edit task") },
                 leadingIcon = { Icon(Icons.Default.Edit, null) },
-                onClick = {
-                    expanded = false
-                    onEdit()
-                }
+                onClick = { expanded = false; onEdit() }
             )
             DropdownMenuItem(
                 text = { Text("Delete task", color = MaterialTheme.colorScheme.error) },
                 leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) },
-                onClick = {
-                    expanded = false
-                    confirmDelete = true
-                }
+                onClick = { expanded = false; confirmDelete = true }
             )
         }
     }
@@ -511,21 +599,17 @@ private fun TaskActionsButton(
     if (confirmDelete) {
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
-            shape = RoundedCornerShape(26.dp),
+            shape = RoundedCornerShape(28.dp),
+            containerColor = Paper,
             title = { Text("Delete task?", fontWeight = FontWeight.ExtraBold) },
-            text = { Text("“$taskTitle” will be removed from the shared schedule. Past completion history stays on the scoreboard.") },
+            text = { Text("“$taskTitle” will leave the shared schedule. Past completion history stays on the scoreboard.") },
             confirmButton = {
                 Button(
-                    onClick = {
-                        confirmDelete = false
-                        onDelete()
-                    },
+                    onClick = { confirmDelete = false; onDelete() },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                 ) { Text("Delete") }
             },
-            dismissButton = {
-                TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
-            }
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } }
         )
     }
 }
@@ -561,21 +645,25 @@ private fun WeekScreen(
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = 28.dp),
+        contentPadding = PaddingValues(bottom = 30.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item {
             Column(Modifier.padding(horizontal = 20.dp, vertical = 20.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text("Weekly control panel", fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, color = Ink)
-                        Text("Plan the week without crowding your Today list.", color = MutedInk)
+                        Text("Weekly plan", style = MaterialTheme.typography.headlineMedium, color = Ink)
+                        Text("The calm place to shape your week.", color = MutedInk)
                     }
-                    Surface(shape = RoundedCornerShape(14.dp), color = Mint) {
-                        Icon(Icons.Default.CalendarMonth, null, tint = ForestDeep, modifier = Modifier.padding(11.dp))
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = MintSoft,
+                        border = BorderStroke(1.dp, Hairline)
+                    ) {
+                        Icon(Icons.Default.CalendarMonth, null, tint = ForestDeep, modifier = Modifier.padding(12.dp))
                     }
                 }
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(18.dp))
                 WeekControls(
                     weekStart = weekStart,
                     today = today,
@@ -593,56 +681,58 @@ private fun WeekScreen(
                     }
                 )
                 Spacer(Modifier.height(12.dp))
-                DayStrip(days, selectedDate, today) { selectedDate = it }
+                DayStrip(days, selectedDate, today, tasks) { selectedDate = it }
             }
         }
 
         item {
             Card(
                 Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-                shape = RoundedCornerShape(22.dp),
-                colors = CardDefaults.cardColors(containerColor = Mint)
+                shape = RoundedCornerShape(24.dp),
+                border = BorderStroke(1.dp, Hairline),
+                colors = CardDefaults.cardColors(containerColor = Paper),
+                elevation = CardDefaults.cardElevation(1.dp)
             ) {
-                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.padding(17.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Surface(shape = RoundedCornerShape(13.dp), color = Mint) {
+                        Text(
+                            selectedDate.format(DateTimeFormatter.ofPattern("d")),
+                            Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                            color = ForestDeep,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 18.sp
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
                         Text(
-                            selectedDate.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")),
+                            selectedDate.format(DateTimeFormatter.ofPattern("EEEE")),
                             fontWeight = FontWeight.ExtraBold,
-                            color = Ink
+                            color = Ink,
+                            fontSize = 17.sp
                         )
                         Text(
-                            if (scheduled.isEmpty()) "No tasks planned" else "${scheduled.size} planned · sorted by room",
+                            if (scheduled.isEmpty()) "No tasks planned" else "${scheduled.size} planned · by room",
                             color = MutedInk,
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
                     Button(
                         onClick = { onAddForDate(selectedDate) },
-                        colors = ButtonDefaults.buttonColors(containerColor = Forest),
-                        shape = RoundedCornerShape(14.dp)
+                        colors = ButtonDefaults.buttonColors(containerColor = ForestDeep),
+                        shape = RoundedCornerShape(14.dp),
+                        contentPadding = PaddingValues(horizontal = 13.dp, vertical = 9.dp)
                     ) {
-                        Icon(Icons.Default.Add, null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Add")
+                        Icon(Icons.Default.Add, null, modifier = Modifier.size(17.dp))
+                        Spacer(Modifier.width(3.dp))
+                        Text("Add", fontWeight = FontWeight.Bold)
                     }
                 }
             }
         }
 
         if (scheduled.isEmpty()) {
-            item {
-                Column(
-                    Modifier.fillMaxWidth().padding(44.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Surface(shape = CircleShape, color = Mint) {
-                        Icon(Icons.Default.EventAvailable, null, tint = Forest, modifier = Modifier.padding(18.dp).size(28.dp))
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    Text("A clear day", fontWeight = FontWeight.Bold, color = Ink)
-                    Text("Add something only if it needs doing.", color = MutedInk)
-                }
-            }
+            item { ClearDayState() }
         } else {
             orderedRooms.forEach { room ->
                 val roomTasks = grouped[room].orEmpty()
@@ -651,6 +741,7 @@ private fun WeekScreen(
                     WeekTaskCard(
                         task = task,
                         done = task.id in completedIds,
+                        missed = selectedDate.isBefore(today) && task.id !in completedIds,
                         onEdit = { onEdit(task) },
                         onDelete = { onDelete(task) },
                         modifier = Modifier.padding(horizontal = 20.dp)
@@ -670,7 +761,11 @@ private fun WeekControls(
     onThisWeek: () -> Unit
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        IconButton(onClick = onPrevious) { Icon(Icons.Default.ChevronLeft, "Previous week") }
+        Surface(shape = CircleShape, color = Paper, border = BorderStroke(1.dp, Hairline)) {
+            IconButton(onClick = onPrevious, modifier = Modifier.size(38.dp)) {
+                Icon(Icons.Default.ChevronLeft, "Previous week")
+            }
+        }
         Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
                 "${weekStart.format(DateTimeFormatter.ofPattern("MMM d"))} – ${weekStart.plusDays(6).format(DateTimeFormatter.ofPattern("MMM d"))}",
@@ -685,9 +780,15 @@ private fun WeekControls(
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 12.sp
                 )
+            } else {
+                Text("This week", color = MutedInk, fontSize = 12.sp)
             }
         }
-        IconButton(onClick = onNext) { Icon(Icons.Default.ChevronRight, "Next week") }
+        Surface(shape = CircleShape, color = Paper, border = BorderStroke(1.dp, Hairline)) {
+            IconButton(onClick = onNext, modifier = Modifier.size(38.dp)) {
+                Icon(Icons.Default.ChevronRight, "Next week")
+            }
+        }
     }
 }
 
@@ -696,16 +797,19 @@ private fun DayStrip(
     days: List<LocalDate>,
     selected: LocalDate,
     today: LocalDate,
+    tasks: List<CleaningTask>,
     onSelected: (LocalDate) -> Unit
 ) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         days.forEach { date ->
             val active = date == selected
+            val count = tasks.count { !it.completed && it.occursOn(date) }
             Surface(
-                modifier = Modifier.weight(1f).clip(RoundedCornerShape(16.dp)).clickable { onSelected(date) },
-                shape = RoundedCornerShape(16.dp),
-                color = if (active) Forest else Color.White,
-                shadowElevation = if (active) 0.dp else 1.dp
+                modifier = Modifier.weight(1f).clip(RoundedCornerShape(17.dp)).clickable { onSelected(date) },
+                shape = RoundedCornerShape(17.dp),
+                color = if (active) ForestDeep else Paper,
+                border = if (active) null else BorderStroke(1.dp, Hairline),
+                shadowElevation = if (active) 5.dp else 0.dp
             ) {
                 Column(
                     Modifier.padding(vertical = 9.dp),
@@ -713,24 +817,28 @@ private fun DayStrip(
                 ) {
                     Text(
                         date.format(DateTimeFormatter.ofPattern("EEE")).take(1),
-                        color = if (active) Color.White.copy(alpha = .8f) else MutedInk,
-                        fontSize = 11.sp,
+                        color = if (active) Color.White.copy(alpha = .68f) else MutedInk,
+                        fontSize = 10.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
                         date.dayOfMonth.toString(),
                         color = if (active) Color.White else Ink,
-                        fontWeight = FontWeight.ExtraBold
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 16.sp
                     )
-                    if (date == today) {
-                        Box(
-                            Modifier
-                                .padding(top = 3.dp)
-                                .size(4.dp)
-                                .background(if (active) Peach else Forest, CircleShape)
+                    when {
+                        date == today -> Box(
+                            Modifier.padding(top = 4.dp).size(5.dp)
+                                .background(if (active) Champagne else Forest, CircleShape)
                         )
-                    } else {
-                        Spacer(Modifier.height(7.dp))
+                        count > 0 -> Text(
+                            count.toString(),
+                            color = if (active) Color.White.copy(alpha = .55f) else Color(0xFF9AA6A1),
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        else -> Spacer(Modifier.height(5.dp))
                     }
                 }
             }
@@ -742,23 +850,40 @@ private fun DayStrip(
 private fun WeekTaskCard(
     task: CleaningTask,
     done: Boolean,
+    missed: Boolean,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Card(
         modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = if (done) Mint.copy(alpha = .72f) else Color.White),
-        elevation = CardDefaults.cardElevation(if (done) 0.dp else 2.dp)
+        shape = RoundedCornerShape(21.dp),
+        border = BorderStroke(1.dp, if (missed) Champagne.copy(alpha = .75f) else Hairline),
+        colors = CardDefaults.cardColors(containerColor = if (done) MintSoft else Paper),
+        elevation = CardDefaults.cardElevation(1.dp)
     ) {
         Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Surface(shape = CircleShape, color = if (done) Forest else Mint) {
+            Surface(
+                shape = RoundedCornerShape(13.dp),
+                color = when {
+                    done -> Forest
+                    missed -> Color(0xFFFFF0DD)
+                    else -> Mint
+                }
+            ) {
                 Icon(
-                    if (done) Icons.Default.Check else Icons.Default.EventRepeat,
+                    when {
+                        done -> Icons.Default.Check
+                        missed -> Icons.Default.Update
+                        else -> Icons.Default.EventRepeat
+                    },
                     null,
-                    tint = if (done) Color.White else Forest,
-                    modifier = Modifier.padding(8.dp).size(18.dp)
+                    tint = when {
+                        done -> Color.White
+                        missed -> Color(0xFF97612B)
+                        else -> Forest
+                    },
+                    modifier = Modifier.padding(9.dp).size(17.dp)
                 )
             }
             Spacer(Modifier.width(11.dp))
@@ -767,7 +892,9 @@ private fun WeekTaskCard(
                     task.title,
                     fontWeight = FontWeight.Bold,
                     color = if (done) MutedInk else Ink,
-                    textDecoration = if (done) TextDecoration.LineThrough else null
+                    textDecoration = if (done) TextDecoration.LineThrough else null,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     "${task.assignee.label} · ${task.recurrence.label}",
@@ -775,11 +902,40 @@ private fun WeekTaskCard(
                     style = MaterialTheme.typography.bodySmall
                 )
             }
-            if (done) {
-                Text("Done", color = ForestDeep, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            when {
+                done -> StatusPill("Done", ForestDeep, Mint)
+                missed -> StatusPill("Carried", Color(0xFF7E542B), Color(0xFFFFF0DD))
             }
             TaskActionsButton(task.title, onEdit, onDelete)
         }
+    }
+}
+
+@Composable
+private fun StatusPill(text: String, content: Color, background: Color) {
+    Surface(shape = CircleShape, color = background) {
+        Text(
+            text,
+            Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+            color = content,
+            fontWeight = FontWeight.Bold,
+            fontSize = 10.sp
+        )
+    }
+}
+
+@Composable
+private fun ClearDayState() {
+    Column(
+        Modifier.fillMaxWidth().padding(44.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Surface(shape = CircleShape, color = MintSoft, border = BorderStroke(1.dp, Hairline)) {
+            Icon(Icons.Default.EventAvailable, null, tint = Forest, modifier = Modifier.padding(18.dp).size(28.dp))
+        }
+        Spacer(Modifier.height(12.dp))
+        Text("A clear day", fontWeight = FontWeight.ExtraBold, color = Ink, fontSize = 18.sp)
+        Text("Leave a little room for life.", color = MutedInk)
     }
 }
 
@@ -788,15 +944,19 @@ private fun CompletedTodayCard(completions: List<CompletionRecord>) {
     Card(
         Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp),
         shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White)
+        border = BorderStroke(1.dp, Hairline),
+        colors = CardDefaults.cardColors(containerColor = Paper),
+        elevation = CardDefaults.cardElevation(1.dp)
     ) {
-        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Surface(shape = CircleShape, color = Mint) {
-                    Icon(Icons.Default.Check, null, tint = Forest, modifier = Modifier.padding(8.dp).size(17.dp))
+                Surface(shape = RoundedCornerShape(11.dp), color = Mint) {
+                    Icon(Icons.Default.Check, null, tint = Forest, modifier = Modifier.padding(8.dp).size(16.dp))
                 }
                 Spacer(Modifier.width(9.dp))
                 Text("Finished today", fontWeight = FontWeight.ExtraBold, color = Ink)
+                Spacer(Modifier.weight(1f))
+                Text(completions.size.toString(), color = MutedInk, fontWeight = FontWeight.Bold)
             }
             completions.forEach { completion ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -831,16 +991,24 @@ private fun HistoryScreen(completions: List<CompletionRecord>, modifier: Modifie
     ) {
         item {
             Column {
-                Text("History & activity", fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, color = Ink)
-                Text("Completed tasks, recent boops and the friendly scoreboard.", color = MutedInk)
+                Text("Activity", style = MaterialTheme.typography.headlineMedium, color = Ink)
+                Text("The little wins that keep home moving.", color = MutedInk)
             }
         }
         item { ScoreboardCard(completions, weekCompletions) }
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Recent wins", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold, color = Ink)
+                Text("Recent completions", style = MaterialTheme.typography.titleLarge, color = Ink)
                 Spacer(Modifier.weight(1f))
-                Text("${completions.size} total", color = MutedInk)
+                Surface(shape = CircleShape, color = MintSoft) {
+                    Text(
+                        "${completions.size} total",
+                        Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                        color = MutedInk,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
             }
         }
         if (completions.isEmpty()) {
@@ -854,59 +1022,58 @@ private fun HistoryScreen(completions: List<CompletionRecord>, modifier: Modifie
 }
 
 @Composable
-private fun ScoreboardCard(
-    allCompletions: List<CompletionRecord>,
-    weekCompletions: List<CompletionRecord>
-) {
+private fun ScoreboardCard(allCompletions: List<CompletionRecord>, weekCompletions: List<CompletionRecord>) {
     val mattWeek = weekCompletions.count { it.completedBy == Assignee.MATT }
     val jessieWeek = weekCompletions.count { it.completedBy == Assignee.JESSIE }
     val mattTotal = allCompletions.count { it.completedBy == Assignee.MATT }
     val jessieTotal = allCompletions.count { it.completedBy == Assignee.JESSIE }
 
     Card(
-        Modifier.fillMaxWidth().shadow(14.dp, RoundedCornerShape(28.dp), ambientColor = Forest.copy(alpha = .13f)),
-        shape = RoundedCornerShape(28.dp),
+        Modifier.fillMaxWidth().shadow(18.dp, RoundedCornerShape(29.dp), ambientColor = Forest.copy(alpha = .13f)),
+        shape = RoundedCornerShape(29.dp),
         colors = CardDefaults.cardColors(containerColor = Color.Transparent)
     ) {
-        Column(
+        Box(
             Modifier
                 .background(Brush.linearGradient(listOf(ForestDeep, Forest)))
                 .padding(20.dp)
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.EmojiEvents, null, tint = Peach, modifier = Modifier.size(22.dp))
-                Spacer(Modifier.width(9.dp))
-                Column {
-                    Text("This week", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
-                    Text("Completed tasks", color = Color.White.copy(alpha = .7f), style = MaterialTheme.typography.bodySmall)
+            Box(
+                Modifier.offset(x = 235.dp, y = (-45).dp).size(110.dp)
+                    .background(Color.White.copy(alpha = .05f), CircleShape)
+            )
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Surface(shape = RoundedCornerShape(12.dp), color = Color.White.copy(alpha = .12f)) {
+                        Icon(Icons.Default.EmojiEvents, null, tint = Champagne, modifier = Modifier.padding(9.dp).size(19.dp))
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Column {
+                        Text("This week", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
+                        Text("A friendly little scoreboard", color = Color.White.copy(alpha = .66f), style = MaterialTheme.typography.bodySmall)
+                    }
                 }
-            }
-            Spacer(Modifier.height(18.dp))
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                ScorePerson("Matt", "M", mattWeek, mattTotal, Modifier.weight(1f))
-                Box(Modifier.width(1.dp).height(72.dp).background(Color.White.copy(alpha = .2f)))
-                ScorePerson("Jessie", "J", jessieWeek, jessieTotal, Modifier.weight(1f))
+                Spacer(Modifier.height(19.dp))
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    ScorePerson("Matt", "M", mattWeek, mattTotal, Modifier.weight(1f))
+                    Box(Modifier.width(1.dp).height(74.dp).background(Color.White.copy(alpha = .16f)))
+                    ScorePerson("Jessie", "J", jessieWeek, jessieTotal, Modifier.weight(1f))
+                }
             }
         }
     }
 }
 
 @Composable
-private fun ScorePerson(
-    name: String,
-    initial: String,
-    weekly: Int,
-    allTime: Int,
-    modifier: Modifier = Modifier
-) {
+private fun ScorePerson(name: String, initial: String, weekly: Int, allTime: Int, modifier: Modifier = Modifier) {
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-        Surface(shape = CircleShape, color = Color.White.copy(alpha = .14f)) {
+        Surface(shape = CircleShape, color = Color.White.copy(alpha = .12f)) {
             Text(initial, Modifier.padding(horizontal = 12.dp, vertical = 7.dp), color = Color.White, fontWeight = FontWeight.ExtraBold)
         }
         Spacer(Modifier.height(7.dp))
         Text("$weekly", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 27.sp)
-        Text(name, color = Color.White.copy(alpha = .9f), fontWeight = FontWeight.Bold)
-        Text("$allTime all-time", color = Color.White.copy(alpha = .62f), style = MaterialTheme.typography.bodySmall)
+        Text(name, color = Color.White.copy(alpha = .92f), fontWeight = FontWeight.Bold)
+        Text("$allTime all-time", color = Color.White.copy(alpha = .58f), style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -915,23 +1082,24 @@ private fun CompletionCard(completion: CompletionRecord) {
     val whenText = completion.completedAt
         .atZone(ZoneId.systemDefault())
         .format(DateTimeFormatter.ofPattern("EEE, MMM d · h:mm a"))
-    val colour = if (completion.completedBy == Assignee.MATT) Forest else Color(0xFF8D6AAE)
+    val colour = if (completion.completedBy == Assignee.MATT) Forest else Color(0xFF80679A)
 
     Card(
         Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        elevation = CardDefaults.cardElevation(2.dp)
+        shape = RoundedCornerShape(21.dp),
+        border = BorderStroke(1.dp, Hairline),
+        colors = CardDefaults.cardColors(containerColor = Paper),
+        elevation = CardDefaults.cardElevation(1.dp)
     ) {
         Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Avatar(completion.completedBy.label.take(1), colour)
+            Avatar(completion.completedBy.label.take(1), colour, size = 38)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(completion.taskTitle, fontWeight = FontWeight.Bold, color = Ink)
                 Text("${completion.room} · ${completion.completedBy.label}", color = MutedInk, style = MaterialTheme.typography.bodySmall)
-                Text(whenText, color = Color(0xFF9AA5A1), style = MaterialTheme.typography.bodySmall)
+                Text(whenText, color = Color(0xFF98A39F), style = MaterialTheme.typography.bodySmall)
             }
-            Icon(Icons.Default.CheckCircle, null, tint = Forest, modifier = Modifier.size(22.dp))
+            Icon(Icons.Default.CheckCircle, null, tint = Forest, modifier = Modifier.size(21.dp))
         }
     }
 }
@@ -941,13 +1109,14 @@ private fun EmptyHistoryState() {
     Card(
         Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White)
+        border = BorderStroke(1.dp, Hairline),
+        colors = CardDefaults.cardColors(containerColor = Paper)
     ) {
         Column(Modifier.fillMaxWidth().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Icon(Icons.Default.History, null, tint = Forest, modifier = Modifier.size(30.dp))
             Spacer(Modifier.height(10.dp))
-            Text("No completed tasks yet", fontWeight = FontWeight.Bold, color = Ink)
-            Text("The scoreboard starts with your first checkmark.", color = MutedInk)
+            Text("No completed tasks yet", fontWeight = FontWeight.ExtraBold, color = Ink)
+            Text("Your first checkmark starts the story.", color = MutedInk)
         }
     }
 }
@@ -955,6 +1124,7 @@ private fun EmptyHistoryState() {
 @Composable
 private fun HouseholdScreen(
     currentUser: Assignee,
+    syncState: HouseholdSyncUiState,
     onCurrentUserChanged: (Assignee) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -965,19 +1135,31 @@ private fun HouseholdScreen(
     ) {
         item {
             Column {
-                Text("Household", fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, color = Ink)
-                Text("Keep Matt and Jessie correctly attributed.", color = MutedInk)
+                Text("Our household", style = MaterialTheme.typography.headlineMedium, color = Ink)
+                Text("A small, private space for the people at home.", color = MutedInk)
             }
         }
         item {
             Card(
                 Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White)
+                shape = RoundedCornerShape(26.dp),
+                border = BorderStroke(1.dp, Hairline),
+                colors = CardDefaults.cardColors(containerColor = Paper),
+                elevation = CardDefaults.cardElevation(1.dp)
             ) {
-                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("This phone belongs to", fontWeight = FontWeight.ExtraBold, color = Ink)
-                    Text("Completed tasks count toward the person selected here.", color = MutedInk, style = MaterialTheme.typography.bodyMedium)
+                Column(Modifier.padding(19.dp), verticalArrangement = Arrangement.spacedBy(13.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Avatar(
+                            currentUser.label.take(1),
+                            if (currentUser == Assignee.MATT) Forest else Color(0xFF80679A),
+                            size = 46
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Column {
+                            Text("This phone belongs to", color = MutedInk, fontSize = 12.sp)
+                            Text(currentUser.label, fontWeight = FontWeight.ExtraBold, color = Ink, fontSize = 19.sp)
+                        }
+                    }
                     ChoiceSection(
                         label = "Household member",
                         values = listOf(Assignee.MATT.label, Assignee.JESSIE.label),
@@ -989,38 +1171,77 @@ private fun HouseholdScreen(
             }
         }
         item {
-            FeatureStatusCard(
-                icon = Icons.Default.Sync,
-                title = "Secure household sync",
-                body = "Your household is ready to share tasks, assignments, history and the weekly plan across two phones when Jessie joins with the pairing code.",
-                status = "Ready"
-            )
+            HouseholdConnectionCard(syncState)
         }
         item {
             FeatureStatusCard(
                 icon = Icons.Default.NotificationsNone,
-                title = "Task-complete boops",
-                body = "On the free Firebase setup, the other phone receives completion activity while household sync is active and catches up when the app reconnects.",
-                status = "Spark / free tier"
+                title = "Completion boops",
+                body = "When one adult finishes a task, the other phone can surface the completion through household sync without notifying the phone that completed it.",
+                status = "Private household activity"
             )
         }
     }
 }
 
 @Composable
-private fun FeatureStatusCard(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    title: String,
-    body: String,
-    status: String
-) {
+private fun HouseholdConnectionCard(syncState: HouseholdSyncUiState) {
+    val paired = syncState.status == HouseholdSyncStatus.PAIRED
+    Card(
+        Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(26.dp),
+        colors = CardDefaults.cardColors(containerColor = if (paired) MintSoft else Paper),
+        border = BorderStroke(1.dp, if (paired) Forest.copy(alpha = .12f) else Hairline),
+        elevation = CardDefaults.cardElevation(1.dp)
+    ) {
+        Row(Modifier.padding(19.dp), verticalAlignment = Alignment.CenterVertically) {
+            Surface(shape = RoundedCornerShape(14.dp), color = if (paired) Mint else Color(0xFFF1F2EF)) {
+                Icon(
+                    if (paired) Icons.Default.Sync else Icons.Default.Link,
+                    null,
+                    tint = if (paired) Forest else MutedInk,
+                    modifier = Modifier.padding(10.dp).size(20.dp)
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(if (paired) "Household connected" else "Household connection", fontWeight = FontWeight.ExtraBold, color = Ink)
+                Text(
+                    syncState.message ?: if (paired) "Tasks and activity are shared." else "Pair the second adult phone when you’re ready.",
+                    color = MutedInk,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                syncState.pairingCode?.let { code ->
+                    Spacer(Modifier.height(8.dp))
+                    Surface(shape = CircleShape, color = Paper, border = BorderStroke(1.dp, Hairline)) {
+                        Row(
+                            Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("PAIRING CODE  ", color = MutedInk, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = .7.sp)
+                            Text(code, color = ForestDeep, fontWeight = FontWeight.ExtraBold, letterSpacing = 1.sp)
+                        }
+                    }
+                }
+            }
+            StatusPill(if (paired) "Ready" else "Setup", if (paired) ForestDeep else MutedInk, if (paired) Mint else MintSoft)
+        }
+    }
+}
+
+@Composable
+private fun FeatureStatusCard(icon: ImageVector, title: String, body: String, status: String) {
     Card(
         Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White)
+        border = BorderStroke(1.dp, Hairline),
+        colors = CardDefaults.cardColors(containerColor = Paper),
+        elevation = CardDefaults.cardElevation(1.dp)
     ) {
         Row(Modifier.padding(18.dp), verticalAlignment = Alignment.Top) {
-            Surface(shape = RoundedCornerShape(14.dp), color = Mint) {
+            Surface(shape = RoundedCornerShape(14.dp), color = MintSoft) {
                 Icon(icon, null, tint = ForestDeep, modifier = Modifier.padding(10.dp).size(20.dp))
             }
             Spacer(Modifier.width(12.dp))
@@ -1029,8 +1250,14 @@ private fun FeatureStatusCard(
                 Spacer(Modifier.height(3.dp))
                 Text(body, color = MutedInk, style = MaterialTheme.typography.bodyMedium)
                 Spacer(Modifier.height(9.dp))
-                Surface(shape = CircleShape, color = Color(0xFFF1F1ED)) {
-                    Text(status, Modifier.padding(horizontal = 10.dp, vertical = 5.dp), color = ForestDeep, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                Surface(shape = CircleShape, color = MintSoft) {
+                    Text(
+                        status,
+                        Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        color = ForestDeep,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 11.sp
+                    )
                 }
             }
         }
@@ -1038,41 +1265,54 @@ private fun FeatureStatusCard(
 }
 
 @Composable
-private fun Avatar(initial: String, colour: Color) {
+private fun Avatar(initial: String, colour: Color, size: Int = 38) {
     Box(
-        Modifier.size(38.dp).background(colour.copy(alpha = .13f), CircleShape),
+        Modifier
+            .size(size.dp)
+            .background(colour.copy(alpha = .12f), CircleShape),
         contentAlignment = Alignment.Center
     ) {
-        Text(initial, color = colour, fontWeight = FontWeight.ExtraBold)
+        Text(initial, color = colour, fontWeight = FontWeight.ExtraBold, fontSize = (size * .38f).sp)
     }
 }
 
 @Composable
 private fun HomeNavigation(selected: HomeTab, onSelected: (HomeTab) -> Unit) {
-    NavigationBar(containerColor = Color.White, tonalElevation = 8.dp) {
+    NavigationBar(containerColor = Paper, tonalElevation = 5.dp) {
+        val colours = NavigationBarItemDefaults.colors(
+            selectedIconColor = ForestDeep,
+            selectedTextColor = ForestDeep,
+            indicatorColor = Mint,
+            unselectedIconColor = Color(0xFF87948F),
+            unselectedTextColor = Color(0xFF87948F)
+        )
         NavigationBarItem(
             selected = selected == HomeTab.TODAY,
             onClick = { onSelected(HomeTab.TODAY) },
             icon = { Icon(Icons.Default.Home, null) },
-            label = { Text("Today") }
+            label = { Text("Today", fontWeight = FontWeight.SemiBold) },
+            colors = colours
         )
         NavigationBarItem(
             selected = selected == HomeTab.WEEK,
             onClick = { onSelected(HomeTab.WEEK) },
             icon = { Icon(Icons.Default.CalendarMonth, null) },
-            label = { Text("Week") }
+            label = { Text("Week", fontWeight = FontWeight.SemiBold) },
+            colors = colours
         )
         NavigationBarItem(
             selected = selected == HomeTab.HISTORY,
             onClick = { onSelected(HomeTab.HISTORY) },
-            icon = { Icon(Icons.Default.Check, null) },
-            label = { Text("History") }
+            icon = { Icon(Icons.Default.CheckCircleOutline, null) },
+            label = { Text("Activity", fontWeight = FontWeight.SemiBold) },
+            colors = colours
         )
         NavigationBarItem(
             selected = selected == HomeTab.HOUSEHOLD,
             onClick = { onSelected(HomeTab.HOUSEHOLD) },
-            icon = { Icon(Icons.Default.Person, null) },
-            label = { Text("Home") }
+            icon = { Icon(Icons.Default.People, null) },
+            label = { Text("Home", fontWeight = FontWeight.SemiBold) },
+            colors = colours
         )
     }
 }
@@ -1083,12 +1323,12 @@ private fun EmptyState() {
         Modifier.fillMaxWidth().padding(48.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Surface(shape = CircleShape, color = Mint) {
+        Surface(shape = CircleShape, color = MintSoft, border = BorderStroke(1.dp, Hairline)) {
             Icon(Icons.Default.Check, null, tint = Forest, modifier = Modifier.padding(18.dp).size(28.dp))
         }
         Spacer(Modifier.height(14.dp))
-        Text("Nothing waiting today", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Ink)
-        Text("Tomorrow gets a fresh, uncluttered list.", color = MutedInk)
+        Text("Nothing waiting today", fontWeight = FontWeight.ExtraBold, fontSize = 18.sp, color = Ink)
+        Text("A little breathing room is a win too.", color = MutedInk)
     }
 }
 
@@ -1108,17 +1348,18 @@ private fun TaskEditorDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        shape = RoundedCornerShape(28.dp),
+        shape = RoundedCornerShape(30.dp),
+        containerColor = Paper,
         title = {
             Column {
-                Text(if (task == null) "Add something" else "Edit task", fontWeight = FontWeight.ExtraBold, fontSize = 24.sp)
-                Text("Choose the day it belongs on — Today stays clean.", color = MutedInk, style = MaterialTheme.typography.bodyMedium)
+                Text(if (task == null) "Add a task" else "Edit task", fontWeight = FontWeight.ExtraBold, fontSize = 24.sp, color = Ink)
+                Text("Give it a day, room and owner.", color = MutedInk, style = MaterialTheme.typography.bodyMedium)
             }
         },
         text = {
             LazyColumn(
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-                modifier = Modifier.widthIn(max = 430.dp).heightIn(max = 570.dp)
+                verticalArrangement = Arrangement.spacedBy(15.dp),
+                modifier = Modifier.widthIn(max = 430.dp).heightIn(max = 575.dp)
             ) {
                 item {
                     OutlinedTextField(
@@ -1126,32 +1367,32 @@ private fun TaskEditorDialog(
                         onValueChange = { title = it },
                         label = { Text("What needs doing?") },
                         singleLine = true,
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        shape = RoundedCornerShape(17.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Forest,
+                            unfocusedBorderColor = Hairline,
+                            focusedContainerColor = Color.White,
+                            unfocusedContainerColor = Color.White
+                        )
                     )
                 }
                 item { DateChoice(dueDate) { dueDate = it } }
                 item { ChoiceSection("Room", rooms, room) { room = it } }
                 item {
-                    ChoiceSection(
-                        "Assigned to",
-                        Assignee.entries.map { it.label },
-                        assignee.label
-                    ) { label -> assignee = Assignee.entries.first { it.label == label } }
+                    ChoiceSection("Assigned to", Assignee.entries.map { it.label }, assignee.label) { label ->
+                        assignee = Assignee.entries.first { it.label == label }
+                    }
                 }
                 item {
-                    ChoiceSection(
-                        "Repeats",
-                        Recurrence.entries.map { it.label },
-                        recurrence.label
-                    ) { label -> recurrence = Recurrence.entries.first { it.label == label } }
+                    ChoiceSection("Repeats", Recurrence.entries.map { it.label }, recurrence.label) { label ->
+                        recurrence = Recurrence.entries.first { it.label == label }
+                    }
                 }
                 item {
-                    ChoiceSection(
-                        "Priority",
-                        Priority.entries.map { it.label },
-                        priority.label
-                    ) { label -> priority = Priority.entries.first { it.label == label } }
+                    ChoiceSection("Priority", Priority.entries.map { it.label }, priority.label) { label ->
+                        priority = Priority.entries.first { it.label == label }
+                    }
                 }
             }
         },
@@ -1159,8 +1400,8 @@ private fun TaskEditorDialog(
             Button(
                 onClick = { onSave(title, room, assignee, priority, recurrence, dueDate) },
                 enabled = title.isNotBlank(),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Forest)
+                shape = RoundedCornerShape(15.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = ForestDeep)
             ) {
                 Text(if (task == null) "Add task" else "Save changes", fontWeight = FontWeight.Bold)
             }
@@ -1196,7 +1437,8 @@ private fun DateChoice(selectedDate: LocalDate, onSelected: (LocalDate) -> Unit)
                 val active = date == selectedDate
                 Surface(
                     Modifier.clip(RoundedCornerShape(14.dp)).clickable { onSelected(date) },
-                    color = if (active) Forest else Color(0xFFF1F1ED),
+                    color = if (active) ForestDeep else MintSoft,
+                    border = if (active) null else BorderStroke(1.dp, Hairline),
                     shape = RoundedCornerShape(14.dp)
                 ) {
                     Column(
@@ -1205,7 +1447,7 @@ private fun DateChoice(selectedDate: LocalDate, onSelected: (LocalDate) -> Unit)
                     ) {
                         Text(
                             date.format(DateTimeFormatter.ofPattern("EEE")),
-                            color = if (active) Color.White.copy(alpha = .8f) else MutedInk,
+                            color = if (active) Color.White.copy(alpha = .75f) else MutedInk,
                             fontSize = 11.sp
                         )
                         Text(
@@ -1221,12 +1463,7 @@ private fun DateChoice(selectedDate: LocalDate, onSelected: (LocalDate) -> Unit)
 }
 
 @Composable
-private fun ChoiceSection(
-    label: String,
-    values: List<String>,
-    selected: String,
-    onSelect: (String) -> Unit
-) {
+private fun ChoiceSection(label: String, values: List<String>, selected: String, onSelect: (String) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
         Text(label, fontWeight = FontWeight.Bold, color = Ink)
         LazyRow(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
@@ -1234,14 +1471,15 @@ private fun ChoiceSection(
                 val active = value == selected
                 Surface(
                     Modifier.clip(CircleShape).clickable { onSelect(value) },
-                    color = if (active) Mint else Color(0xFFF1F1ED),
+                    color = if (active) Mint else MintSoft,
+                    border = BorderStroke(1.dp, if (active) Forest.copy(alpha = .15f) else Hairline),
                     shape = CircleShape
                 ) {
                     Text(
                         if (active) "✓ $value" else value,
                         Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                         color = if (active) ForestDeep else MutedInk,
-                        fontWeight = FontWeight.Medium,
+                        fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
                         fontSize = 13.sp
                     )
                 }
@@ -1289,6 +1527,9 @@ private fun CleaningTask.occursOn(date: LocalDate): Boolean {
     }
 }
 
+private fun CleaningTask.isCarryoverFor(date: LocalDate): Boolean =
+    !completed && nextDueDate.isBefore(date) && !occursOn(date)
+
 private fun LocalDate.startOfWeek(): LocalDate = minusDays((dayOfWeek.value - 1).toLong())
 
 private fun orderedRooms(keys: Set<String>): List<String> = buildList {
@@ -1299,6 +1540,36 @@ private fun orderedRooms(keys: Set<String>): List<String> = buildList {
 private fun roomSortIndex(room: String): Int {
     val index = roomOrder.indexOf(room)
     return if (index >= 0) index else roomOrder.size
+}
+
+private fun roomIcon(room: String): ImageVector = when (room) {
+    "Kitchen" -> Icons.Default.Kitchen
+    "Living room" -> Icons.Default.Weekend
+    "Bathroom" -> Icons.Default.Bathtub
+    "Bedroom" -> Icons.Default.Bed
+    "Hallway" -> Icons.Default.MeetingRoom
+    "Entryway" -> Icons.Default.DoorFront
+    else -> Icons.Default.HomeWork
+}
+
+private fun roomAccent(room: String): Color = when (room) {
+    "Kitchen" -> Color(0xFF8A633C)
+    "Living room" -> Color(0xFF5C6F91)
+    "Bathroom" -> Color(0xFF4F7F88)
+    "Bedroom" -> Color(0xFF80679A)
+    "Hallway" -> Color(0xFF66766F)
+    "Entryway" -> Color(0xFF967047)
+    else -> Forest
+}
+
+private fun roomTint(room: String): Color = when (room) {
+    "Kitchen" -> Color(0xFFF6EEE4)
+    "Living room" -> Color(0xFFEDF0F7)
+    "Bathroom" -> Color(0xFFE8F1F2)
+    "Bedroom" -> Lilac
+    "Hallway" -> Color(0xFFEEF1EF)
+    "Entryway" -> Color(0xFFF6EFE7)
+    else -> MintSoft
 }
 
 private fun dayPart(): String = when (LocalTime.now().hour) {
