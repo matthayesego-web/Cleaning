@@ -5,9 +5,13 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function householdPath(householdId) {
+      return /databases/$(database)/documents/households/$(householdId);
+    }
+
     function isHouseholdMember(householdId) {
       return signedIn()
-        && request.auth.uid in get(/databases/$(database)/documents/households/$(householdId)).data.memberUids;
+        && request.auth.uid in get(householdPath(householdId)).data.memberUids;
     }
 
     function hasValidInviteFor(householdId) {
@@ -17,12 +21,14 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/invites/$(resource.data.pairingCode)).data.householdId == householdId;
     }
 
-    // Pairing codes are exact-document lookups only; listing all codes is blocked.
+    // Pairing codes are exact-document lookups only; enumerating them is blocked.
     match /invites/{code} {
       allow get: if signedIn();
       allow list: if false;
-      allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid;
-      allow update, delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
+      allow create: if signedIn()
+        && request.resource.data.ownerUid == request.auth.uid;
+      allow update, delete: if signedIn()
+        && resource.data.ownerUid == request.auth.uid;
     }
 
     match /households/{householdId} {
@@ -30,28 +36,32 @@ service cloud.firestore {
         && request.resource.data.memberUids.size() == 1
         && request.resource.data.memberUids[0] == request.auth.uid;
 
-      // A joining phone may get this one household after resolving its exact
-      // invite document. Broad household listing is never allowed.
+      // A joining phone can read exactly the household referenced by its code.
       allow get: if signedIn() && (
         request.auth.uid in resource.data.memberUids || hasValidInviteFor(householdId)
       );
       allow list: if false;
 
-      // Existing members can update the household. A new member may only add
-      // themselves, and only while the household still has fewer than two users.
-      allow update: if signedIn() && (
-        request.auth.uid in resource.data.memberUids
-        || (
-          request.resource.data.memberUids.size() <= 2
-          && request.resource.data.memberUids.hasAll(resource.data.memberUids)
-          && request.auth.uid in request.resource.data.memberUids
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberUids', 'updatedAt'])
-        )
-      );
+      // Only the second phone may extend memberUids, and it may only add itself.
+      // No member can silently replace/remove the other person or add a third.
+      allow update: if signedIn()
+        && resource.data.memberUids.size() < 2
+        && request.resource.data.memberUids.size() == resource.data.memberUids.size() + 1
+        && request.resource.data.memberUids.size() <= 2
+        && request.resource.data.memberUids.hasAll(resource.data.memberUids)
+        && request.auth.uid in request.resource.data.memberUids
+        && !(request.auth.uid in resource.data.memberUids)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberUids', 'updatedAt']);
 
       match /members/{memberId} {
         allow read: if isHouseholdMember(householdId);
-        allow create, update, delete: if signedIn() && request.auth.uid == memberId;
+
+        // The joining transaction creates the new phone's own member document
+        // at the same time as it adds that UID to the household.
+        allow create, update: if signedIn()
+          && request.auth.uid == memberId;
+        allow delete: if signedIn()
+          && request.auth.uid == memberId;
       }
 
       match /tasks/{taskId} {
