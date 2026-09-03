@@ -10,6 +10,13 @@ service cloud.firestore {
         && request.auth.uid in get(/databases/$(database)/documents/households/$(householdId)).data.memberUids;
     }
 
+    function hasValidInviteFor(householdId) {
+      return signedIn()
+        && resource.data.pairingCode is string
+        && exists(/databases/$(database)/documents/invites/$(resource.data.pairingCode))
+        && get(/databases/$(database)/documents/invites/$(resource.data.pairingCode)).data.householdId == householdId;
+    }
+
     // Pairing codes are exact-document lookups only; listing all codes is blocked.
     match /invites/{code} {
       allow get: if signedIn();
@@ -23,7 +30,12 @@ service cloud.firestore {
         && request.resource.data.memberUids.size() == 1
         && request.resource.data.memberUids[0] == request.auth.uid;
 
-      allow read: if signedIn() && request.auth.uid in resource.data.memberUids;
+      // A joining phone may get this one household after resolving its exact
+      // invite document. Broad household listing is never allowed.
+      allow get: if signedIn() && (
+        request.auth.uid in resource.data.memberUids || hasValidInviteFor(householdId)
+      );
+      allow list: if false;
 
       // Existing members can update the household. A new member may only add
       // themselves, and only while the household still has fewer than two users.
