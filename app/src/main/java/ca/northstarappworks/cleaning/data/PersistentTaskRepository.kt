@@ -17,8 +17,9 @@ import java.time.LocalDate
 /**
  * Local source of truth for tasks and completion history.
  *
- * The repository stays behind a small interface so the secure household sync
- * layer can mirror this data later without forcing the Compose UI to change.
+ * Firestore mirrors through this repository so the UI stays responsive offline,
+ * while a paired household can replace the local snapshot whenever remote data
+ * changes.
  */
 class PersistentTaskRepository(context: Context) : TaskRepository {
     private val preferences = context.applicationContext.getSharedPreferences(
@@ -54,6 +55,16 @@ class PersistentTaskRepository(context: Context) : TaskRepository {
         persistCompletions()
     }
 
+    override fun replaceTasks(tasks: List<CleaningTask>) {
+        mutableTasks.value = tasks
+        persistTasks()
+    }
+
+    override fun replaceCompletions(records: List<CompletionRecord>) {
+        mutableCompletions.value = records.sortedByDescending { it.completedAt }
+        persistCompletions()
+    }
+
     private fun persistTasks() {
         val array = JSONArray()
         mutableTasks.value.forEach { task -> array.put(task.toJson()) }
@@ -68,7 +79,7 @@ class PersistentTaskRepository(context: Context) : TaskRepository {
 
     private fun loadTasks(): List<CleaningTask> {
         val raw = preferences.getString(KEY_TASKS, null)
-        if (raw.isNullOrBlank()) return starterTasks()
+        if (raw.isNullOrBlank()) return emptyList()
 
         return runCatching {
             val array = JSONArray(raw)
@@ -77,7 +88,7 @@ class PersistentTaskRepository(context: Context) : TaskRepository {
                     add(array.getJSONObject(index).toCleaningTask())
                 }
             }
-        }.getOrElse { starterTasks() }
+        }.getOrElse { emptyList() }
     }
 
     private fun loadCompletions(): List<CompletionRecord> {
@@ -161,42 +172,6 @@ class PersistentTaskRepository(context: Context) : TaskRepository {
 
     private inline fun <reified T : Enum<T>> enumValueOrDefault(value: String, fallback: T): T =
         enumValues<T>().firstOrNull { it.name == value } ?: fallback
-
-    private fun starterTasks() = listOf(
-        CleaningTask(
-            id = "welcome-1",
-            title = "Empty dishwasher",
-            room = "Kitchen",
-            dueLabel = "Before dinner",
-            assignee = Assignee.JESSIE,
-            recurrence = Recurrence.DAILY
-        ),
-        CleaningTask(
-            id = "welcome-2",
-            title = "Sweep living room",
-            room = "Living room",
-            assignee = Assignee.EITHER,
-            recurrence = Recurrence.WEEKLY
-        ),
-        CleaningTask(
-            id = "welcome-3",
-            title = "Clean bathroom",
-            room = "Bathroom",
-            dueLabel = "Tonight",
-            assignee = Assignee.MATT,
-            priority = Priority.URGENT,
-            recurrence = Recurrence.WEEKLY
-        ),
-        CleaningTask(
-            id = "welcome-4",
-            title = "Wipe kitchen counters",
-            room = "Kitchen",
-            assignee = Assignee.MATT,
-            completed = true,
-            completedBy = Assignee.MATT,
-            completedAt = Instant.now()
-        )
-    )
 
     private companion object {
         const val PREFS_NAME = "our_home_tasks"
