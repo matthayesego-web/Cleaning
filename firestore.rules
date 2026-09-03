@@ -5,13 +5,9 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function householdPath(householdId) {
-      return /databases/$(database)/documents/households/$(householdId);
-    }
-
     function isHouseholdMember(householdId) {
       return signedIn()
-        && request.auth.uid in get(householdPath(householdId)).data.memberUids;
+        && request.auth.uid in get(/databases/$(database)/documents/households/$(householdId)).data.memberUids;
     }
 
     function hasValidInviteFor(householdId) {
