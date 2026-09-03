@@ -10,6 +10,7 @@ interface TaskRepository {
 
     fun add(task: CleaningTask)
     fun update(task: CleaningTask)
+    fun delete(taskId: String)
     fun addCompletion(record: CompletionRecord)
     fun removeCompletion(recordId: String)
     fun replaceTasks(tasks: List<CleaningTask>)
