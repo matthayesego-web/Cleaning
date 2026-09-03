@@ -12,4 +12,6 @@ interface TaskRepository {
     fun update(task: CleaningTask)
     fun addCompletion(record: CompletionRecord)
     fun removeCompletion(recordId: String)
+    fun replaceTasks(tasks: List<CleaningTask>)
+    fun replaceCompletions(records: List<CompletionRecord>)
 }
