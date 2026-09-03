@@ -19,7 +19,6 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
-import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -45,6 +44,11 @@ data class HouseholdSyncUiState(
  * Keeps the two-phone household mirrored through Firestore while leaving the
  * local repository as the UI's source of truth. This means the app remains
  * usable offline and naturally catches up when connectivity returns.
+ *
+ * This implementation deliberately stays on Firebase's free tier. Firestore
+ * listeners provide near-real-time completion boops while the app process is
+ * alive, and a persisted completion checkpoint provides a catch-up boop the
+ * next time the app reconnects after having been fully closed.
  */
 class HouseholdSyncManager(
     context: Context,
@@ -54,7 +58,6 @@ class HouseholdSyncManager(
     private val appContext = context.applicationContext
     private val auth = FirebaseAuth.getInstance()
     private val firestore = FirebaseFirestore.getInstance()
-    private val messaging = FirebaseMessaging.getInstance()
 
     private val mutableUiState = MutableStateFlow(
         if (preferences.householdId.value == null) {
@@ -110,11 +113,7 @@ class HouseholdSyncManager(
                     "createdAt" to FieldValue.serverTimestamp()
                 )
             )
-            batch.set(
-                memberRef,
-                memberMap(role),
-                SetOptions.merge()
-            )
+            batch.set(memberRef, memberMap(role), SetOptions.merge())
 
             batch.commit()
                 .addOnSuccessListener {
@@ -275,32 +274,53 @@ class HouseholdSyncManager(
                 repository.replaceCompletions(records)
 
                 if (!completionListenerPrimed) {
+                    val previousCheckpoint = preferences.lastSeenCompletionAt()
                     seenCompletionIds += records.map { it.id }
+
+                    if (previousCheckpoint != null) {
+                        records
+                            .asSequence()
+                            .filter { it.completedAt.isAfter(previousCheckpoint) }
+                            .filter { it.completedBy != preferences.currentUser.value }
+                            .sortedBy { it.completedAt }
+                            .forEach(::showCompletionBoop)
+                    }
+
                     completionListenerPrimed = true
+                    updateCompletionCheckpoint(records)
                 } else {
                     snapshot.documentChanges
+                        .asSequence()
                         .filter { it.type == DocumentChange.Type.ADDED }
                         .mapNotNull { change -> change.document.toCompletionRecordOrNull() }
                         .filter { record -> seenCompletionIds.add(record.id) }
                         .filter { record -> record.completedBy != preferences.currentUser.value }
-                        .forEach { record ->
-                            TaskNotificationManager.showTaskCompleted(
-                                context = appContext,
-                                completedBy = record.completedBy.label,
-                                taskTitle = record.taskTitle,
-                                room = record.room,
-                                notificationId = record.id.hashCode()
-                            )
-                        }
+                        .forEach(::showCompletionBoop)
+
+                    updateCompletionCheckpoint(records)
                 }
             }
 
-        registerMessagingToken(householdId)
         mutableUiState.value = HouseholdSyncUiState(
             status = HouseholdSyncStatus.PAIRED,
             pairingCode = preferences.pairingCode.value,
             message = "Matt and Jessie can now share this household."
         )
+    }
+
+    private fun showCompletionBoop(record: CompletionRecord) {
+        TaskNotificationManager.showTaskCompleted(
+            context = appContext,
+            completedBy = record.completedBy.label,
+            taskTitle = record.taskTitle,
+            room = record.room,
+            notificationId = record.id.hashCode()
+        )
+    }
+
+    private fun updateCompletionCheckpoint(records: List<CompletionRecord>) {
+        records.maxOfOrNull { it.completedAt }
+            ?.let(preferences::setLastSeenCompletionAt)
     }
 
     private fun stopListeners() {
@@ -331,25 +351,6 @@ class HouseholdSyncManager(
         batch.commit()
             .addOnSuccessListener { onFinished() }
             .addOnFailureListener { error -> fail(error, "Household created, but local tasks couldn't upload") }
-    }
-
-    private fun registerMessagingToken(householdId: String) {
-        val user = auth.currentUser ?: return
-        messaging.token.addOnSuccessListener { token ->
-            firestore.collection(HOUSEHOLDS)
-                .document(householdId)
-                .collection(MEMBERS)
-                .document(user.uid)
-                .set(
-                    mapOf(
-                        "fcmToken" to token,
-                        "role" to preferences.currentUser.value.name,
-                        "name" to preferences.currentUser.value.label,
-                        "updatedAt" to FieldValue.serverTimestamp()
-                    ),
-                    SetOptions.merge()
-                )
-        }
     }
 
     private fun memberMap(role: Assignee): Map<String, Any> = mapOf(
