@@ -1,20 +1,20 @@
 package ca.northstarappworks.cleaning.notifications
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.content.ContextCompat
 import androidx.core.content.getSystemService
 import ca.northstarappworks.cleaning.MainActivity
 import ca.northstarappworks.cleaning.R
 
-/**
- * Builds the intentionally small "boop" notification used when the other
- * household member completes a task. The eventual sync/push receiver only has
- * to pass the remote completion payload into this class.
- */
+/** Builds the intentionally small household task-complete "boop". */
 object TaskNotificationManager {
     private const val CHANNEL_ID = "task_completions"
     private const val CHANNEL_NAME = "Task completions"
@@ -26,6 +26,14 @@ object TaskNotificationManager {
         room: String,
         notificationId: Int = (completedBy + taskTitle + room).hashCode()
     ) {
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+
         val manager = context.getSystemService<NotificationManager>() ?: return
         ensureChannel(manager)
 
