@@ -12,6 +12,7 @@ import ca.northstarappworks.cleaning.model.Priority
 import ca.northstarappworks.cleaning.model.Recurrence
 import ca.northstarappworks.cleaning.sync.HouseholdSyncManager
 import ca.northstarappworks.cleaning.sync.HouseholdSyncUiState
+import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.flow.StateFlow
 import java.time.Instant
 import java.time.LocalDate
@@ -21,6 +22,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private val repository: TaskRepository = PersistentTaskRepository(application)
     private val householdPreferences = HouseholdPreferences(application)
     private val syncManager = HouseholdSyncManager(application, repository, householdPreferences)
+    private val firestore = FirebaseFirestore.getInstance()
 
     val tasks: StateFlow<List<CleaningTask>> = repository.tasks
     val completions: StateFlow<List<CompletionRecord>> = repository.completions
@@ -38,7 +40,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         room: String,
         assignee: Assignee,
         priority: Priority,
-        recurrence: Recurrence
+        recurrence: Recurrence,
+        dueDate: LocalDate = LocalDate.now()
     ) {
         val cleanTitle = title.trim()
         if (cleanTitle.isEmpty()) return
@@ -50,10 +53,45 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             assignee = assignee,
             priority = priority,
             recurrence = recurrence,
-            nextDueDate = LocalDate.now()
+            nextDueDate = dueDate
         )
         repository.add(task)
         syncManager.publishTask(task)
+    }
+
+    fun updateTask(
+        task: CleaningTask,
+        title: String,
+        room: String,
+        assignee: Assignee,
+        priority: Priority,
+        recurrence: Recurrence,
+        dueDate: LocalDate
+    ) {
+        val cleanTitle = title.trim()
+        if (cleanTitle.isEmpty()) return
+
+        val updated = task.copy(
+            title = cleanTitle,
+            room = room,
+            assignee = assignee,
+            priority = priority,
+            recurrence = recurrence,
+            nextDueDate = dueDate
+        )
+        repository.update(updated)
+        syncManager.publishTask(updated)
+    }
+
+    fun deleteTask(task: CleaningTask) {
+        repository.delete(task.id)
+
+        val householdId = householdPreferences.householdId.value ?: return
+        firestore.collection("households")
+            .document(householdId)
+            .collection("tasks")
+            .document(task.id)
+            .delete()
     }
 
     fun setCurrentUser(assignee: Assignee) {
