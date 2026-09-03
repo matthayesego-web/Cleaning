@@ -6,7 +6,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-/** Stores which household member is using this phone. */
+/** Stores this phone's household identity and pairing information. */
 class HouseholdPreferences(context: Context) {
     private val preferences = context.applicationContext.getSharedPreferences(
         PREFS_NAME,
@@ -16,10 +16,34 @@ class HouseholdPreferences(context: Context) {
     private val mutableCurrentUser = MutableStateFlow(loadCurrentUser())
     val currentUser: StateFlow<Assignee> = mutableCurrentUser.asStateFlow()
 
+    private val mutableHouseholdId = MutableStateFlow(preferences.getString(KEY_HOUSEHOLD_ID, null))
+    val householdId: StateFlow<String?> = mutableHouseholdId.asStateFlow()
+
+    private val mutablePairingCode = MutableStateFlow(preferences.getString(KEY_PAIRING_CODE, null))
+    val pairingCode: StateFlow<String?> = mutablePairingCode.asStateFlow()
+
     fun setCurrentUser(assignee: Assignee) {
         if (assignee == Assignee.EITHER) return
         mutableCurrentUser.value = assignee
         preferences.edit().putString(KEY_CURRENT_USER, assignee.name).apply()
+    }
+
+    fun setHousehold(householdId: String, pairingCode: String) {
+        mutableHouseholdId.value = householdId
+        mutablePairingCode.value = pairingCode
+        preferences.edit()
+            .putString(KEY_HOUSEHOLD_ID, householdId)
+            .putString(KEY_PAIRING_CODE, pairingCode)
+            .apply()
+    }
+
+    fun clearHousehold() {
+        mutableHouseholdId.value = null
+        mutablePairingCode.value = null
+        preferences.edit()
+            .remove(KEY_HOUSEHOLD_ID)
+            .remove(KEY_PAIRING_CODE)
+            .apply()
     }
 
     private fun loadCurrentUser(): Assignee {
@@ -31,5 +55,7 @@ class HouseholdPreferences(context: Context) {
     private companion object {
         const val PREFS_NAME = "our_home_household"
         const val KEY_CURRENT_USER = "current_user"
+        const val KEY_HOUSEHOLD_ID = "household_id"
+        const val KEY_PAIRING_CODE = "pairing_code"
     }
 }
