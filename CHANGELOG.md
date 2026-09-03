@@ -1,5 +1,16 @@
 # Our Home changelog
 
+## 0.3.0 — calm daily planning
+- Today now shows only tasks scheduled for the current day instead of carrying every overdue item forward.
+- Added an automatic midnight date rollover so the Today screen refreshes itself for the new day.
+- Added a Weekly control panel with Monday–Sunday navigation, previous/next week controls, and quick task creation for a selected day.
+- Added room-grouped task organization to both Today and Week views.
+- Added day selection when creating or editing a task, including weekly schedule anchoring.
+- Made the top notification bell open recent household activity/history.
+- Made each task's three-dot menu functional with Edit and Delete actions plus delete confirmation.
+- Added persistent local and Firestore task deletion.
+- Updated Household status copy to reflect the working Spark/free-tier sync setup.
+
 ## 0.2.0 — two-phone test milestone
 - Added durable local task and completion storage.
 - Added one-off, daily, weekly, and monthly task recurrence.
