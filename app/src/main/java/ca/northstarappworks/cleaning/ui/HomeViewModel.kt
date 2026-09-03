@@ -1,7 +1,8 @@
 package ca.northstarappworks.cleaning.ui
 
-import androidx.lifecycle.ViewModel
-import ca.northstarappworks.cleaning.data.InMemoryTaskRepository
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import ca.northstarappworks.cleaning.data.PersistentTaskRepository
 import ca.northstarappworks.cleaning.data.TaskRepository
 import ca.northstarappworks.cleaning.model.Assignee
 import ca.northstarappworks.cleaning.model.CleaningTask
@@ -10,14 +11,15 @@ import kotlinx.coroutines.flow.StateFlow
 import java.time.Instant
 import java.util.UUID
 
-class HomeViewModel(
-    private val repository: TaskRepository = InMemoryTaskRepository()
-) : ViewModel() {
+class HomeViewModel(application: Application) : AndroidViewModel(application) {
+    private val repository: TaskRepository = PersistentTaskRepository(application)
+
     val tasks: StateFlow<List<CleaningTask>> = repository.tasks
 
     fun addTask(title: String, room: String, assignee: Assignee, priority: Priority) {
         val cleanTitle = title.trim()
         if (cleanTitle.isEmpty()) return
+
         repository.add(
             CleaningTask(
                 id = UUID.randomUUID().toString(),
