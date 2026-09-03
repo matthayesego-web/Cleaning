@@ -10,6 +10,8 @@ import ca.northstarappworks.cleaning.model.CleaningTask
 import ca.northstarappworks.cleaning.model.CompletionRecord
 import ca.northstarappworks.cleaning.model.Priority
 import ca.northstarappworks.cleaning.model.Recurrence
+import ca.northstarappworks.cleaning.sync.HouseholdSyncManager
+import ca.northstarappworks.cleaning.sync.HouseholdSyncUiState
 import kotlinx.coroutines.flow.StateFlow
 import java.time.Instant
 import java.time.LocalDate
@@ -18,10 +20,18 @@ import java.util.UUID
 class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private val repository: TaskRepository = PersistentTaskRepository(application)
     private val householdPreferences = HouseholdPreferences(application)
+    private val syncManager = HouseholdSyncManager(application, repository, householdPreferences)
 
     val tasks: StateFlow<List<CleaningTask>> = repository.tasks
     val completions: StateFlow<List<CompletionRecord>> = repository.completions
     val currentUser: StateFlow<Assignee> = householdPreferences.currentUser
+    val syncUiState: StateFlow<HouseholdSyncUiState> = syncManager.uiState
+
+    val hadHouseholdAtLaunch: Boolean = householdPreferences.householdId.value != null
+
+    fun createHousehold() = syncManager.createHousehold()
+
+    fun joinHousehold(code: String) = syncManager.joinHousehold(code)
 
     fun addTask(
         title: String,
@@ -33,21 +43,22 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         val cleanTitle = title.trim()
         if (cleanTitle.isEmpty()) return
 
-        repository.add(
-            CleaningTask(
-                id = UUID.randomUUID().toString(),
-                title = cleanTitle,
-                room = room,
-                assignee = assignee,
-                priority = priority,
-                recurrence = recurrence,
-                nextDueDate = LocalDate.now()
-            )
+        val task = CleaningTask(
+            id = UUID.randomUUID().toString(),
+            title = cleanTitle,
+            room = room,
+            assignee = assignee,
+            priority = priority,
+            recurrence = recurrence,
+            nextDueDate = LocalDate.now()
         )
+        repository.add(task)
+        syncManager.publishTask(task)
     }
 
     fun setCurrentUser(assignee: Assignee) {
         householdPreferences.setCurrentUser(assignee)
+        syncManager.updateMemberIdentity(assignee)
     }
 
     fun setCompleted(task: CleaningTask, completed: Boolean) {
@@ -71,40 +82,43 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         )
 
         repository.addCompletion(record)
+        syncManager.publishCompletion(record)
 
-        if (task.recurrence == Recurrence.ONE_OFF) {
-            repository.update(
-                task.copy(
-                    completed = true,
-                    completedBy = completedBy,
-                    completedAt = completedAt
-                )
+        val updatedTask = if (task.recurrence == Recurrence.ONE_OFF) {
+            task.copy(
+                completed = true,
+                completedBy = completedBy,
+                completedAt = completedAt
             )
         } else {
-            repository.update(
-                task.copy(
-                    completed = false,
-                    completedBy = null,
-                    completedAt = null,
-                    nextDueDate = nextOccurrence(task.nextDueDate, task.recurrence)
-                )
+            task.copy(
+                completed = false,
+                completedBy = null,
+                completedAt = null,
+                nextDueDate = nextOccurrence(task.nextDueDate, task.recurrence)
             )
         }
+
+        repository.update(updatedTask)
+        syncManager.publishTask(updatedTask)
     }
 
     private fun reopenTask(task: CleaningTask) {
         repository.completions.value
             .filter { it.taskId == task.id }
             .maxByOrNull { it.completedAt }
-            ?.let { repository.removeCompletion(it.id) }
+            ?.let { completion ->
+                repository.removeCompletion(completion.id)
+                syncManager.deleteCompletion(completion.id)
+            }
 
-        repository.update(
-            task.copy(
-                completed = false,
-                completedBy = null,
-                completedAt = null
-            )
+        val reopened = task.copy(
+            completed = false,
+            completedBy = null,
+            completedAt = null
         )
+        repository.update(reopened)
+        syncManager.publishTask(reopened)
     }
 
     private fun nextOccurrence(currentDueDate: LocalDate, recurrence: Recurrence): LocalDate {
