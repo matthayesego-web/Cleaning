@@ -5,8 +5,9 @@ import ca.northstarappworks.cleaning.model.Assignee
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.time.Instant
 
-/** Stores this phone's household identity and pairing information. */
+/** Stores this phone's household identity, pairing information and sync checkpoints. */
 class HouseholdPreferences(context: Context) {
     private val preferences = context.applicationContext.getSharedPreferences(
         PREFS_NAME,
@@ -34,6 +35,7 @@ class HouseholdPreferences(context: Context) {
         preferences.edit()
             .putString(KEY_HOUSEHOLD_ID, householdId)
             .putString(KEY_PAIRING_CODE, pairingCode)
+            .remove(KEY_LAST_SEEN_COMPLETION_AT)
             .apply()
     }
 
@@ -43,7 +45,16 @@ class HouseholdPreferences(context: Context) {
         preferences.edit()
             .remove(KEY_HOUSEHOLD_ID)
             .remove(KEY_PAIRING_CODE)
+            .remove(KEY_LAST_SEEN_COMPLETION_AT)
             .apply()
+    }
+
+    fun lastSeenCompletionAt(): Instant? = preferences
+        .getString(KEY_LAST_SEEN_COMPLETION_AT, null)
+        ?.let { value -> runCatching { Instant.parse(value) }.getOrNull() }
+
+    fun setLastSeenCompletionAt(instant: Instant) {
+        preferences.edit().putString(KEY_LAST_SEEN_COMPLETION_AT, instant.toString()).apply()
     }
 
     private fun loadCurrentUser(): Assignee {
@@ -57,5 +68,6 @@ class HouseholdPreferences(context: Context) {
         const val KEY_CURRENT_USER = "current_user"
         const val KEY_HOUSEHOLD_ID = "household_id"
         const val KEY_PAIRING_CODE = "pairing_code"
+        const val KEY_LAST_SEEN_COMPLETION_AT = "last_seen_completion_at"
     }
 }
