@@ -1,0 +1,89 @@
+name: Signed Our Home release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Branch, tag, or commit to sign
+        required: true
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  signed-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 8.11.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Read app version
+        run: |
+          VERSION_NAME="$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -1)"
+          test -n "$VERSION_NAME" || (echo "Unable to read versionName" && exit 1)
+          echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
+
+      - name: Restore protected signing key
+        env:
+          SIGNING_FILE_B64: ${{ secrets.OUR_HOME_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$SIGNING_FILE_B64" || (echo "Missing OUR_HOME_KEYSTORE_BASE64" && exit 1)
+          echo "$SIGNING_FILE_B64" | base64 --decode > "$RUNNER_TEMP/our-home-signing.jks"
+
+      - name: Build release APK
+        run: gradle --no-daemon :app:assembleRelease --stacktrace
+
+      - name: Sign release APK
+        env:
+          STORE_SECRET: ${{ secrets.OUR_HOME_KEYSTORE_PASSWORD }}
+        run: |
+          test -n "$STORE_SECRET" || (echo "Missing OUR_HOME_KEYSTORE_PASSWORD" && exit 1)
+
+          KEY_ALIAS="our-home"
+          UNSIGNED_APK="app/build/outputs/apk/release/app-release-unsigned.apk"
+          ALIGNED_APK="$RUNNER_TEMP/OurHome-aligned.apk"
+          SIGNED_APK="OurHome-v${VERSION_NAME}.apk"
+          BUILD_TOOLS_DIR="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
+          ZIPALIGN="$BUILD_TOOLS_DIR/zipalign"
+          APKSIGNER="$BUILD_TOOLS_DIR/apksigner"
+
+          test -x "$ZIPALIGN" || (echo "zipalign not found" && exit 1)
+          test -x "$APKSIGNER" || (echo "apksigner not found" && exit 1)
+
+          "$ZIPALIGN" -p -f 4 "$UNSIGNED_APK" "$ALIGNED_APK"
+          "$APKSIGNER" sign \
+            --ks "$RUNNER_TEMP/our-home-signing.jks" \
+            --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass env:STORE_SECRET \
+            --key-pass env:STORE_SECRET \
+            --out "$SIGNED_APK" \
+            "$ALIGNED_APK"
+
+          "$APKSIGNER" verify --verbose --print-certs "$SIGNED_APK"
+          sha256sum "$SIGNED_APK" > "OurHome-v${VERSION_NAME}.apk.sha256"
+
+      - name: Upload signed Our Home APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: OurHome-v${{ env.VERSION_NAME }}-signed
+          path: |
+            OurHome-v${{ env.VERSION_NAME }}.apk
+            OurHome-v${{ env.VERSION_NAME }}.apk.sha256
+          if-no-files-found: error
+          retention-days: 30
