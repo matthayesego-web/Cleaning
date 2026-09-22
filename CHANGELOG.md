@@ -1,5 +1,17 @@
 # Our Home changelog
 
+## 0.4.0 — rewards & coupons
+- Added a dedicated Rewards tab with separate Matt and Jessie catalogues.
+- Added 10 points per completed task and individual point balances.
+- Added a starter reward catalogue plus custom rewards with custom point costs and descriptions.
+- Added a personal coupon wallet: redeeming spends points and saves the coupon until it is used.
+- Using a coupon now creates a confirmation request for the other household phone.
+- The other person can Approve the request or choose Not now; Not now returns the coupon to the wallet.
+- Added reward-use notifications while household sync is active, with catch-up for new requests after reconnecting.
+- Added Firestore synchronization and local persistence for custom rewards, coupons, statuses and confirmation requests.
+- Kept the catalogues neutrally named by household member with no special adult label.
+
+
 ## 0.3.2 — flexible repeats & completion undo
 - Added custom day-based recurrence so a task can repeat every 2–365 days instead of only daily, weekly or monthly.
 - Custom repeat schedules stay anchored to the selected start day and advance to the next future occurrence after completion.
