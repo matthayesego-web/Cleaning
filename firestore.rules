@@ -67,6 +67,14 @@ service cloud.firestore {
       match /completions/{completionId} {
         allow read, write: if isHouseholdMember(householdId);
       }
+
+      match /rewards/{rewardId} {
+        allow read, write: if isHouseholdMember(householdId);
+      }
+
+      match /rewardCoupons/{couponId} {
+        allow read, write: if isHouseholdMember(householdId);
+      }
     }
   }
 }
