@@ -46,7 +46,7 @@ import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 
-private enum class HomeTab { TODAY, WEEK, HISTORY, HOUSEHOLD }
+private enum class HomeTab { TODAY, WEEK, REWARDS, HISTORY, HOUSEHOLD }
 private enum class TaskFilter { ALL, MINE, PARTNER, SHARED }
 
 private data class EditorRequest(
@@ -66,6 +66,8 @@ private val rooms = listOf(
 fun OurHomeApp(homeViewModel: HomeViewModel = viewModel()) {
     val tasks by homeViewModel.tasks.collectAsState()
     val completions by homeViewModel.completions.collectAsState()
+    val customRewards by homeViewModel.customRewards.collectAsState()
+    val rewardCoupons by homeViewModel.rewardCoupons.collectAsState()
     val currentUser by homeViewModel.currentUser.collectAsState()
     val syncState by homeViewModel.syncUiState.collectAsState()
     val today = rememberToday()
@@ -112,6 +114,20 @@ fun OurHomeApp(homeViewModel: HomeViewModel = viewModel()) {
                 onEdit = { editorRequest = EditorRequest(it, it.nextDueDate) },
                 onDelete = homeViewModel::deleteTask,
                 onUndo = homeViewModel::undoCompletion,
+                modifier = Modifier.padding(padding)
+            )
+
+            HomeTab.REWARDS -> RewardsScreen(
+                completions = completions,
+                customRewards = customRewards,
+                coupons = rewardCoupons,
+                currentUser = currentUser,
+                onAddReward = homeViewModel::addCustomReward,
+                onDeleteReward = homeViewModel::deleteCustomReward,
+                onRedeem = homeViewModel::redeemReward,
+                onRequestUse = homeViewModel::requestRewardUse,
+                onApprove = homeViewModel::approveRewardUse,
+                onDecline = homeViewModel::declineRewardUse,
                 modifier = Modifier.padding(padding)
             )
 
@@ -859,6 +875,7 @@ private fun HomeNavigation(selected: HomeTab, onSelected: (HomeTab) -> Unit) {
         val colours = NavigationBarItemDefaults.colors(selectedIconColor = ForestDeep, selectedTextColor = ForestDeep, indicatorColor = Mint, unselectedIconColor = Color(0xFF87948F), unselectedTextColor = Color(0xFF87948F))
         NavigationBarItem(selected == HomeTab.TODAY, { onSelected(HomeTab.TODAY) }, { Icon(Icons.Default.Home, null) }, label = { Text("Today", fontWeight = FontWeight.SemiBold) }, colors = colours)
         NavigationBarItem(selected == HomeTab.WEEK, { onSelected(HomeTab.WEEK) }, { Icon(Icons.Default.CalendarMonth, null) }, label = { Text("Week", fontWeight = FontWeight.SemiBold) }, colors = colours)
+        NavigationBarItem(selected == HomeTab.REWARDS, { onSelected(HomeTab.REWARDS) }, { Icon(Icons.Default.CardGiftcard, null) }, label = { Text("Rewards", fontWeight = FontWeight.SemiBold) }, colors = colours)
         NavigationBarItem(selected == HomeTab.HISTORY, { onSelected(HomeTab.HISTORY) }, { Icon(Icons.Default.CheckCircleOutline, null) }, label = { Text("Activity", fontWeight = FontWeight.SemiBold) }, colors = colours)
         NavigationBarItem(selected == HomeTab.HOUSEHOLD, { onSelected(HomeTab.HOUSEHOLD) }, { Icon(Icons.Default.People, null) }, label = { Text("Home", fontWeight = FontWeight.SemiBold) }, colors = colours)
     }
