@@ -88,4 +88,4 @@ jobs:
             OurHome-v${{ env.VERSION_NAME }}.apk
             OurHome-v${{ env.VERSION_NAME }}.apk.sha256
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
