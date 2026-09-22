@@ -2,12 +2,16 @@ package ca.northstarappworks.cleaning.sync
 
 import android.content.Context
 import ca.northstarappworks.cleaning.data.HouseholdPreferences
+import ca.northstarappworks.cleaning.data.RewardRepository
 import ca.northstarappworks.cleaning.data.TaskRepository
 import ca.northstarappworks.cleaning.model.Assignee
 import ca.northstarappworks.cleaning.model.CleaningTask
 import ca.northstarappworks.cleaning.model.CompletionRecord
 import ca.northstarappworks.cleaning.model.Priority
 import ca.northstarappworks.cleaning.model.Recurrence
+import ca.northstarappworks.cleaning.model.RewardCoupon
+import ca.northstarappworks.cleaning.model.RewardCouponStatus
+import ca.northstarappworks.cleaning.model.RewardDefinition
 import ca.northstarappworks.cleaning.notifications.TaskNotificationManager
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
@@ -38,6 +42,7 @@ data class HouseholdSyncUiState(
 class HouseholdSyncManager(
     context: Context,
     private val repository: TaskRepository,
+    private val rewardRepository: RewardRepository,
     private val preferences: HouseholdPreferences
 ) {
     private val appContext = context.applicationContext
@@ -59,7 +64,9 @@ class HouseholdSyncManager(
 
     private val listenerRegistrations = mutableListOf<ListenerRegistration>()
     private val seenCompletionIds = mutableSetOf<String>()
+    private val seenRewardRequestKeys = mutableSetOf<String>()
     private var completionListenerPrimed = false
+    private var rewardListenerPrimed = false
 
     init {
         preferences.householdId.value?.let { householdId -> withSignedInUser { startSync(householdId) } }
@@ -152,6 +159,8 @@ class HouseholdSyncManager(
                         preferences.setHousehold(householdId, code)
                         repository.replaceTasks(emptyList())
                         repository.replaceCompletions(emptyList())
+                        rewardRepository.replaceRewards(emptyList())
+                        rewardRepository.replaceCoupons(emptyList())
                         startSync(householdId)
                     }.addOnFailureListener { fail(it, "Couldn't join the household") }
                 }
@@ -179,6 +188,26 @@ class HouseholdSyncManager(
             .collection(COMPLETIONS).document(recordId).delete()
     }
 
+    fun publishReward(reward: RewardDefinition) {
+        val householdId = preferences.householdId.value ?: return
+        firestore.collection(HOUSEHOLDS).document(householdId)
+            .collection(REWARDS).document(reward.id)
+            .set(reward.toRemoteMap(), SetOptions.merge())
+    }
+
+    fun deleteReward(rewardId: String) {
+        val householdId = preferences.householdId.value ?: return
+        firestore.collection(HOUSEHOLDS).document(householdId)
+            .collection(REWARDS).document(rewardId).delete()
+    }
+
+    fun publishCoupon(coupon: RewardCoupon) {
+        val householdId = preferences.householdId.value ?: return
+        firestore.collection(HOUSEHOLDS).document(householdId)
+            .collection(REWARD_COUPONS).document(coupon.id)
+            .set(coupon.toRemoteMap(), SetOptions.merge())
+    }
+
     fun updateMemberIdentity(assignee: Assignee) {
         if (assignee == Assignee.EITHER) return
         val householdId = preferences.householdId.value ?: return
@@ -200,7 +229,9 @@ class HouseholdSyncManager(
     private fun startSync(householdId: String) {
         stopListeners()
         completionListenerPrimed = false
+        rewardListenerPrimed = false
         seenCompletionIds.clear()
+        seenRewardRequestKeys.clear()
         val householdRef = firestore.collection(HOUSEHOLDS).document(householdId)
 
         listenerRegistrations += householdRef.collection(TASKS).addSnapshotListener { snapshot, error ->
@@ -248,6 +279,55 @@ class HouseholdSyncManager(
             }
         }
 
+        listenerRegistrations += householdRef.collection(REWARDS).addSnapshotListener { snapshot, error ->
+            if (error != null) {
+                fail(error, "Reward sync paused")
+                return@addSnapshotListener
+            }
+            val rewards = snapshot?.documents.orEmpty()
+                .mapNotNull { it.toRewardDefinitionOrNull() }
+                .sortedBy { it.createdAt }
+            rewardRepository.replaceRewards(rewards)
+        }
+
+        listenerRegistrations += householdRef.collection(REWARD_COUPONS).addSnapshotListener { snapshot, error ->
+            if (error != null) {
+                fail(error, "Reward requests paused")
+                return@addSnapshotListener
+            }
+            snapshot ?: return@addSnapshotListener
+            val coupons = snapshot.documents
+                .mapNotNull { it.toRewardCouponOrNull() }
+                .sortedByDescending { it.redeemedAt }
+            rewardRepository.replaceCoupons(coupons)
+
+            val currentUser = preferences.currentUser.value
+            if (!rewardListenerPrimed) {
+                val checkpoint = preferences.lastSeenRewardRequestAt()
+                coupons.asSequence()
+                    .filter { it.status == RewardCouponStatus.PENDING }
+                    .filter { it.owner != currentUser }
+                    .filter { coupon -> checkpoint == null || (coupon.requestedAt?.isAfter(checkpoint) == true) }
+                    .sortedBy { it.requestedAt }
+                    .forEach(::showRewardRequest)
+                seenRewardRequestKeys += coupons.mapNotNull { coupon ->
+                    coupon.requestedAt?.let { "${coupon.id}:$it" }
+                }
+                rewardListenerPrimed = true
+                updateRewardRequestCheckpoint(coupons)
+            } else {
+                snapshot.documentChanges.asSequence()
+                    .mapNotNull { it.document.toRewardCouponOrNull() }
+                    .filter { it.status == RewardCouponStatus.PENDING }
+                    .filter { it.owner != currentUser }
+                    .filter { coupon ->
+                        coupon.requestedAt?.let { seenRewardRequestKeys.add("${coupon.id}:$it") } == true
+                    }
+                    .forEach(::showRewardRequest)
+                updateRewardRequestCheckpoint(coupons)
+            }
+        }
+
         mutableUiState.value = HouseholdSyncUiState(
             status = HouseholdSyncStatus.PAIRED,
             pairingCode = preferences.pairingCode.value,
@@ -269,6 +349,20 @@ class HouseholdSyncManager(
         records.maxOfOrNull { it.completedAt }?.let(preferences::setLastSeenCompletionAt)
     }
 
+    private fun showRewardRequest(coupon: RewardCoupon) {
+        TaskNotificationManager.showRewardUseRequest(
+            context = appContext,
+            requestedBy = coupon.owner.label,
+            rewardTitle = coupon.title,
+            notificationId = coupon.id.hashCode()
+        )
+    }
+
+    private fun updateRewardRequestCheckpoint(coupons: List<RewardCoupon>) {
+        coupons.mapNotNull { it.requestedAt }.maxOrNull()
+            ?.let(preferences::setLastSeenRewardRequestAt)
+    }
+
     private fun stopListeners() {
         listenerRegistrations.forEach { it.remove() }
         listenerRegistrations.clear()
@@ -277,9 +371,13 @@ class HouseholdSyncManager(
     private fun uploadLocalSnapshot(householdRef: DocumentReference, onFinished: () -> Unit) {
         val localTasks = repository.tasks.value.filterNot { it.id.startsWith("welcome-") }
         val localCompletions = repository.completions.value
-        if (localTasks.isEmpty() && localCompletions.isEmpty()) {
+        val localRewards = rewardRepository.customRewards.value
+        val localCoupons = rewardRepository.coupons.value
+        if (localTasks.isEmpty() && localCompletions.isEmpty() && localRewards.isEmpty() && localCoupons.isEmpty()) {
             repository.replaceTasks(emptyList())
             repository.replaceCompletions(emptyList())
+            rewardRepository.replaceRewards(emptyList())
+            rewardRepository.replaceCoupons(emptyList())
             onFinished()
             return
         }
@@ -288,6 +386,12 @@ class HouseholdSyncManager(
         localTasks.forEach { batch.set(householdRef.collection(TASKS).document(it.id), it.toRemoteMap()) }
         localCompletions.forEach {
             batch.set(householdRef.collection(COMPLETIONS).document(it.id), it.toRemoteMap())
+        }
+        localRewards.forEach {
+            batch.set(householdRef.collection(REWARDS).document(it.id), it.toRemoteMap())
+        }
+        localCoupons.forEach {
+            batch.set(householdRef.collection(REWARD_COUPONS).document(it.id), it.toRemoteMap())
         }
         batch.commit()
             .addOnSuccessListener { onFinished() }
@@ -335,6 +439,54 @@ class HouseholdSyncManager(
         "completedAt" to Timestamp(Date.from(completedAt))
     )
 
+    private fun RewardDefinition.toRemoteMap(): Map<String, Any> = mapOf(
+        "title" to title,
+        "description" to description,
+        "cost" to cost,
+        "owner" to owner.name,
+        "custom" to custom,
+        "createdAt" to Timestamp(Date.from(createdAt)),
+        "updatedAt" to FieldValue.serverTimestamp()
+    )
+
+    private fun RewardCoupon.toRemoteMap(): Map<String, Any?> = mapOf(
+        "rewardId" to rewardId,
+        "title" to title,
+        "cost" to cost,
+        "owner" to owner.name,
+        "status" to status.name,
+        "redeemedAt" to Timestamp(Date.from(redeemedAt)),
+        "requestedAt" to requestedAt?.let { Timestamp(Date.from(it)) },
+        "resolvedAt" to resolvedAt?.let { Timestamp(Date.from(it)) },
+        "updatedAt" to FieldValue.serverTimestamp()
+    )
+
+    private fun DocumentSnapshot.toRewardDefinitionOrNull(): RewardDefinition? = runCatching {
+        RewardDefinition(
+            id = id,
+            title = getString("title") ?: return null,
+            description = getString("description").orEmpty(),
+            cost = (getLong("cost")?.toInt() ?: 10).coerceAtLeast(1),
+            owner = enumOrDefault(getString("owner"), Assignee.MATT),
+            custom = getBoolean("custom") ?: true,
+            createdAt = getTimestamp("createdAt")?.toDate()?.toInstant() ?: Instant.now()
+        )
+    }.getOrNull()
+
+    private fun DocumentSnapshot.toRewardCouponOrNull(): RewardCoupon? = runCatching {
+        RewardCoupon(
+            id = id,
+            rewardId = getString("rewardId").orEmpty(),
+            title = getString("title") ?: "Reward",
+            cost = (getLong("cost")?.toInt() ?: 10).coerceAtLeast(1),
+            owner = enumOrDefault(getString("owner"), Assignee.MATT),
+            status = enumOrDefault(getString("status"), RewardCouponStatus.AVAILABLE),
+            redeemedAt = getTimestamp("redeemedAt")?.toDate()?.toInstant() ?: Instant.now(),
+            requestedAt = getTimestamp("requestedAt")?.toDate()?.toInstant(),
+            resolvedAt = getTimestamp("resolvedAt")?.toDate()?.toInstant()
+        )
+    }.getOrNull()
+
     private fun DocumentSnapshot.toCleaningTaskOrNull(): CleaningTask? = runCatching {
         CleaningTask(
             id = id,
@@ -381,6 +533,8 @@ class HouseholdSyncManager(
         private const val MEMBERS = "members"
         private const val TASKS = "tasks"
         private const val COMPLETIONS = "completions"
+        private const val REWARDS = "rewards"
+        private const val REWARD_COUPONS = "rewardCoupons"
         private const val MAX_MEMBERS = 2
         const val PAIRING_CODE_LENGTH = 6
         private const val PAIRING_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
