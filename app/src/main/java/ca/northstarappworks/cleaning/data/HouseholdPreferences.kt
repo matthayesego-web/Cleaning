@@ -38,6 +38,7 @@ class HouseholdPreferences(context: Context) {
             // Establish a baseline at pairing time so historical completions do
             // not all boop, while anything completed afterwards can be caught up.
             .putString(KEY_LAST_SEEN_COMPLETION_AT, Instant.now().toString())
+            .putString(KEY_LAST_SEEN_REWARD_REQUEST_AT, Instant.now().toString())
             .apply()
     }
 
@@ -48,6 +49,7 @@ class HouseholdPreferences(context: Context) {
             .remove(KEY_HOUSEHOLD_ID)
             .remove(KEY_PAIRING_CODE)
             .remove(KEY_LAST_SEEN_COMPLETION_AT)
+            .remove(KEY_LAST_SEEN_REWARD_REQUEST_AT)
             .apply()
     }
 
@@ -57,6 +59,14 @@ class HouseholdPreferences(context: Context) {
 
     fun setLastSeenCompletionAt(instant: Instant) {
         preferences.edit().putString(KEY_LAST_SEEN_COMPLETION_AT, instant.toString()).apply()
+    }
+
+    fun lastSeenRewardRequestAt(): Instant? = preferences
+        .getString(KEY_LAST_SEEN_REWARD_REQUEST_AT, null)
+        ?.let { value -> runCatching { Instant.parse(value) }.getOrNull() }
+
+    fun setLastSeenRewardRequestAt(instant: Instant) {
+        preferences.edit().putString(KEY_LAST_SEEN_REWARD_REQUEST_AT, instant.toString()).apply()
     }
 
     private fun loadCurrentUser(): Assignee {
@@ -71,5 +81,6 @@ class HouseholdPreferences(context: Context) {
         const val KEY_HOUSEHOLD_ID = "household_id"
         const val KEY_PAIRING_CODE = "pairing_code"
         const val KEY_LAST_SEEN_COMPLETION_AT = "last_seen_completion_at"
+        const val KEY_LAST_SEEN_REWARD_REQUEST_AT = "last_seen_reward_request_at"
     }
 }
