@@ -97,3 +97,12 @@ jobs:
               --generate-notes \
               --target "$GITHUB_SHA"
           fi
+
+      - name: Upload temporary chat handoff APK
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: OurHome-v${{ env.VERSION_NAME }}-chat-handoff
+          path: OurHome-v${{ env.VERSION_NAME }}.apk
+          if-no-files-found: error
+          retention-days: 1
